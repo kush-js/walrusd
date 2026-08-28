@@ -5,7 +5,7 @@ multi-tenant SQLite service with one logical database per user. Object
 storage (Cloudflare R2 or any S3-compatible store with conditional writes)
 is the durable database; workers are disposable compute. Implementation of
 the [Basemnt Distributed SQLite Storage and Database Worker Specification]
-(basemnt-distributed-sqlite-worker-spec.md).
+(docs/specs/basemnt-distributed-sqlite-worker-spec.md).
 
 ```
                           Clients
