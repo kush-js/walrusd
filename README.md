@@ -191,7 +191,10 @@ semantics.
 
 ## Documentation
 
-The original specification is translated into topic docs:
+Guides and specification translation:
+- [docs/usage.md](docs/usage.md) — **start here**: running WALrus next to
+  your app, calling it from Bun/Node, topologies, retries, worker-ID
+  lifecycle, FAQ
 
 - [docs/architecture.md](docs/architecture.md) — purpose, placement vs
   authority, tenancy and object layout (spec §1-5)
