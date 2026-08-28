@@ -1,9 +1,0 @@
-# Keep the build context minimal.
-.env
-.env.*
-*.md
-!README.md
-.git/
-.gitignore
-docker-compose*.yml
-Makefile
