@@ -16,6 +16,7 @@ typedef uint64_t (*walrus_init_t)(const char* req, int n);
 
 static walrus_call_t walrus_write_sym;
 static walrus_call_t walrus_read_sym;
+static walrus_call_t walrus_read_dsn_sym;
 static walrus_version_t walrus_version_sym;
 static walrus_close_t walrus_close_sym;
 static walrus_free_t walrus_free_sym;
@@ -94,6 +95,10 @@ static napi_value walrus_read(napi_env env, napi_callback_info info) {
   return walrus_call(env, info, walrus_read_sym);
 }
 
+static napi_value walrus_read_dsn(napi_env env, napi_callback_info info) {
+  return walrus_call(env, info, walrus_read_dsn_sym);
+}
+
 static napi_value walrus_close(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -126,11 +131,12 @@ static napi_value walrus_load(napi_env env, napi_callback_info info) {
   }
   walrus_write_sym = reinterpret_cast<walrus_call_t>(dlsym(lib, "walrus_runtime_write"));
   walrus_read_sym = reinterpret_cast<walrus_call_t>(dlsym(lib, "walrus_runtime_read"));
+  walrus_read_dsn_sym = reinterpret_cast<walrus_call_t>(dlsym(lib, "walrus_runtime_read_dsn"));
   walrus_version_sym = reinterpret_cast<walrus_version_t>(dlsym(lib, "walrus_runtime_version"));
   walrus_close_sym = reinterpret_cast<walrus_close_t>(dlsym(lib, "walrus_runtime_close"));
   walrus_free_sym = reinterpret_cast<walrus_free_t>(dlsym(lib, "walrus_free"));
   walrus_init_sym = reinterpret_cast<walrus_init_t>(dlsym(lib, "walrus_runtime_init"));
-  if (!walrus_write_sym || !walrus_read_sym || !walrus_version_sym || !walrus_close_sym || !walrus_free_sym || !walrus_init_sym) {
+  if (!walrus_write_sym || !walrus_read_sym || !walrus_read_dsn_sym || !walrus_version_sym || !walrus_close_sym || !walrus_free_sym || !walrus_init_sym) {
     return walrus_throw(env, "walrus: shared library missing required symbols");
   }
   napi_value out;
@@ -148,6 +154,7 @@ static napi_value Init(napi_env env, napi_value exports) {
   WALRUS_EXPORT("init", walrus_init)
   WALRUS_EXPORT("write", walrus_write)
   WALRUS_EXPORT("read", walrus_read)
+  WALRUS_EXPORT("readDsn", walrus_read_dsn)
   WALRUS_EXPORT("close", walrus_close)
 #undef WALRUS_EXPORT
   return exports;

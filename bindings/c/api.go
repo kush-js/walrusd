@@ -53,6 +53,7 @@ type runtimeEntry struct {
 	rt interface {
 		WithReadBytes(ctx handledCtx, req []byte) ([]byte, error)
 		WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error)
+		ReadDSNBytes(ctx handledCtx, req []byte) ([]byte, error)
 		Close() error
 	}
 }
@@ -76,6 +77,15 @@ func walrus_runtime_write(h C.uint64_t, requestBytes *C.char, n C.int, deadlineM
 //export walrus_runtime_read
 func walrus_runtime_read(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
 	return dispatch(h, "read", requestBytes, n, deadlineMs)
+}
+
+// walrus_runtime_read_dsn registers the read VFS for a descriptor and
+// returns the DSN as a JSON envelope. The host opens it with its OWN
+// SQLite (bun:sqlite) to read through litestream VFS natively.
+//
+//export walrus_runtime_read_dsn
+func walrus_runtime_read_dsn(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
+	return dispatch(h, "read_dsn", requestBytes, n, deadlineMs)
 }
 
 // walrus_runtime_version returns {"api_version":N,"core_version":"..."}.
@@ -137,6 +147,8 @@ func dispatch(h C.uint64_t, op string, requestBytes *C.char, n C.int, deadlineMs
 		res, err = entry.rt.WithWriteBytes(ctx, req)
 	case "read":
 		res, err = entry.rt.WithReadBytes(ctx, req)
+	case "read_dsn":
+		res, err = entry.rt.ReadDSNBytes(ctx, req)
 	}
 	if err != nil {
 		return cString(errEnvelopeFromClassified(err))

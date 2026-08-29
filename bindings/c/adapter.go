@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"walrus/litestream"
@@ -25,6 +26,19 @@ func NewAdapter(store storage.ConditionalStore, owner string, cfg runtime.Config
 		return nil, err
 	}
 	return &Adapter{rt: rt}, nil
+}
+
+// ReadDSNRequest asks for a natively-openable read DSN for a descriptor.
+type ReadDSNRequest struct {
+	Descriptor descriptorJSON `json:"descriptor"`
+}
+
+// ReadDSNResult carries the DSN, the VFS name it uses, and the replica URL
+// for the loadable-extension native read path.
+type ReadDSNResult struct {
+	DSN        string `json:"dsn"`
+	VFS        string `json:"vfs"`
+	ReplicaURL string `json:"replica_url,omitempty"`
 }
 
 // WriteRequest is one batched mutation (spec §11: batch-oriented so one
@@ -144,6 +158,7 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 			}
 			res.Rows = append(res.Rows, b)
 		}
+
 		return rows.Err()
 	})
 	if err != nil {
@@ -154,6 +169,55 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 
 // Close releases runtime resources.
 func (a *Adapter) Close() error { return nil }
+
+// ReadDSNBytes registers the per-database read VFS and returns both the DSN
+// the host's own SQLite can open (e.g. bun:sqlite) and the litestream replica
+// URL for attaching the loadable VFS extension in a separate host process.
+func (a *Adapter) ReadDSNBytes(ctx handledCtx, req []byte) ([]byte, error) {
+	var r ReadDSNRequest
+	if err := json.Unmarshal(req, &r); err != nil {
+		return nil, walruserr.Wrap(walruserr.ClassInvalidArgument, "decode read_dsn request", err)
+	}
+	cctx, cancel := ctx.context()
+	defer cancel()
+	d := ddescriptor(r.Descriptor)
+	dbID, err := d.Identity()
+	if err != nil {
+		return nil, walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
+	}
+	dsn, err := a.rt.ReadDSN(cctx, d)
+	if err != nil {
+		return nil, err
+	}
+	// The VFS name is embedded in the DSN after "vfs=".
+	vfs := ""
+	if i := strings.Index(dsn, "vfs="); i >= 0 {
+		vfs = dsn[i+4:]
+		if j := strings.IndexByte(vfs, '&'); j >= 0 {
+			vfs = vfs[:j]
+		}
+	}
+	// Replica URL for the loadable-extension path (bun native reads): the
+	// litestream s3 URL at this database's replica prefix.
+	p := d.Storage
+	replicaURL := ""
+	if p.Provider == "s3" && p.Bucket != "" {
+		prefix := dbID.ReplicaPrefix(p.RootPrefix)
+		u := "s3://" + p.Bucket + "/" + prefix
+		q := []string{}
+		if p.Endpoint != "" {
+			q = append(q, "endpoint="+p.Endpoint)
+		}
+		if p.Region != "" {
+			q = append(q, "region="+p.Region)
+		}
+		if len(q) > 0 {
+			u += "?" + strings.Join(q, "&")
+		}
+		replicaURL = u
+	}
+	return json.Marshal(ReadDSNResult{DSN: dsn, VFS: vfs, ReplicaURL: replicaURL})
+}
 
 func ddescriptor(d descriptorJSON) runtime.DatabaseDescriptor {
 	return runtime.DatabaseDescriptor{

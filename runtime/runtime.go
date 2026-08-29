@@ -105,6 +105,23 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 	return vfs, nil
 }
 
+// ReadDSN registers (once per process) the read VFS for the descriptor's
+// database and returns a SQLite DSN the HOST's own SQLite (e.g. Bun's
+// bun:sqlite) can open natively in litestream read mode: reads stream LTX
+// pages straight from object storage through the shared VFS. The DSN is
+// read-only; writes must go through WithWrite (spec §8).
+func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, error) {
+	db, err := d.Identity()
+	if err != nil {
+		return "", walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
+	}
+	vfs, err := r.database(d, db)
+	if err != nil {
+		return "", err
+	}
+	return vfs.ReadDSN(ctx, db.ID), nil
+}
+
 // WithRead serves a read against the remote committed replica state
 // (spec §9). No lease is taken; only state Litestream observed remotely is
 // visible. Read sessions are cached per database with LRU + idle-TTL

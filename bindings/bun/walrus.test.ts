@@ -5,6 +5,7 @@ import { describe, test, expect, beforeAll } from "bun:test";
 import { WALrusDatabase, WALrusError, type DatabaseDescriptor } from "../node/src/index";
 
 const ROOT = process.env.WALRUS_TEST_FILE_ROOT ?? "/tmp/walrus-bun-test";
+let customSQLiteSet = false;
 
 const descriptor = (id: string): DatabaseDescriptor => ({
   database_id: id,
@@ -130,4 +131,102 @@ test("live R2 write/flush/read-back", async () => {
   const rows = await db.read({ database: d, sql: "SELECT v FROM t WHERE id = 1" });
   expect(rows.rows[0].v).toBe("from-bun-live");
   await db.close();
+}, 60_000);
+
+// Native read mode via the loadable VFS extension (spec §9): bun:sqlite
+// reads stream LTX pages from object storage through the attached VFS.
+// Uses the same file root as the write tests above.
+test("native read mode through attached VFS", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { WALrusDatabase, vfsExtensionPath } = await import("../node/dist/index.js");
+  if (!customSQLiteSet) {
+    Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+    customSQLiteSet = true;
+  }
+
+  const db = new WALrusDatabase({ owner: "bun-native" });
+  const d = descriptor("users/native_1");
+  const res = await db.write({
+    database: d,
+    idempotencyKey: "nat_" + Math.random().toString(36).slice(2),
+    statements: [
+      { sql: "CREATE TABLE IF NOT EXISTS docs (id INTEGER PRIMARY KEY, body TEXT)" },
+      { sql: "INSERT INTO docs VALUES (1, 'native mode')" },
+    ],
+  });
+  expect(typeof res.txid).toBe("string");
+
+  const { dsn, vfs, replica_url } = await db.readDsn({ database: d });
+  expect(vfs).toBeTruthy();
+
+  // The file provider's replica URL is local; attach via the extension only
+  // supports s3 today, so native VFS reads are gated on s3 descriptors.
+  if (!replica_url) {
+    await db.close();
+    console.log("file provider: skipping VFS attach (s3 only)");
+    return;
+  }
+  const scratch = new Database(":memory:");
+  scratch.loadExtension(vfsExtensionPath(), "sqlite3_walrusvfs_init");
+  scratch.exec(`SELECT walrus_vfs_attach('${vfs}', '${replica_url}', '${d.storage.access_key_id ?? ""}', '${d.storage.secret_access_key ?? ""}')`);
+  scratch.close();
+
+  const native = new Database(dsn);
+  const rows = native.query("SELECT body FROM docs WHERE id = 1").all();
+  native.close();
+  await db.close();
+  expect(rows.length).toBe(1);
+  expect(rows[0].body).toBe("native mode");
+}, 30_000);
+
+// Live S3 (R2) native read via the attached VFS extension (spec §15).
+test("live R2 native VFS read", async () => {
+  const s3 = {
+    endpoint: process.env.WALRUS_TEST_S3_ENDPOINT,
+    bucket: process.env.WALRUS_TEST_S3_BUCKET,
+    access_key_id: process.env.WALRUS_TEST_S3_ACCESS_KEY_ID,
+    secret_access_key: process.env.WALRUS_TEST_S3_SECRET_ACCESS_KEY,
+  };
+  if (!s3.endpoint || !s3.bucket || !s3.access_key_id || !s3.secret_access_key) {
+    console.log("WALRUS_TEST_S3_* not set; skipping live native read test");
+    return;
+  }
+  const { Database } = await import("bun:sqlite");
+  const { WALrusDatabase, vfsExtensionPath } = await import("../node/dist/index.js");
+  if (!customSQLiteSet) {
+    Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+    customSQLiteSet = true;
+  }
+
+  const prefix = `bun-native-live-${Date.now()}`;
+  const db = new WALrusDatabase({ owner: "bun-native-live" });
+  const d: DatabaseDescriptor = {
+    database_id: `${prefix}/users/u1`,
+    storage: { provider: "s3", endpoint: s3.endpoint!, region: "auto", bucket: s3.bucket!, root_prefix: prefix, access_key_id: s3.access_key_id!, secret_access_key: s3.secret_access_key! },
+    credentials: { access_key_id: s3.access_key_id!, secret_access_key: s3.secret_access_key! },
+  };
+  const res = await db.write({
+    database: d,
+    idempotencyKey: "live",
+    statements: [
+      { sql: "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)" },
+      { sql: "INSERT INTO t VALUES (1, 'native-live')" },
+    ],
+  });
+  expect(res.txid).toBeTruthy();
+
+  const { dsn, vfs, replica_url } = await db.readDsn({ database: d });
+  expect(replica_url).toContain("s3://");
+
+  const scratch = new Database(":memory:");
+  scratch.loadExtension(vfsExtensionPath(), "sqlite3_walrusvfs_init");
+  scratch.exec(`SELECT walrus_vfs_attach('${vfs}', '${replica_url}', '${s3.access_key_id}', '${s3.secret_access_key}')`);
+  scratch.close();
+
+  const native = new Database(dsn);
+  const rows = native.query("SELECT v FROM t WHERE id = 1").all();
+  native.close();
+  await db.close();
+  expect(rows.length).toBe(1);
+  expect(rows[0].v).toBe("native-live");
 }, 60_000);

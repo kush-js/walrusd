@@ -4,3 +4,4 @@ build/
 dist/
 *.dylib
 *.node
+bindings/node/prebuilds/

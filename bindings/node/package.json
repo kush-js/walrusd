@@ -4,10 +4,18 @@
   "description": "WALrus embedded SQLite runtime binding for Node.js and Bun",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "prebuilds",
+    "native",
+    "lib"
+  ],
   "scripts": {
     "build": "node-gyp rebuild -C native && tsc -p .",
-    "test": "bun test ../bun/*.test.ts"
+    "test": "bun test ../bun/*.test.ts && node --test smoke.test.mjs"
   },
   "gypfile": true,
-  "license": "MIT"
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"]
 }

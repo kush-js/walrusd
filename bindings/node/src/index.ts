@@ -11,6 +11,7 @@ interface NativeAPI {
   init(configJson: string): number;
   write(handle: number, requestJson: string, deadlineMs: number): string;
   read(handle: number, requestJson: string, deadlineMs: number): string;
+  readDsn(handle: number, requestJson: string, deadlineMs: number): string;
   close(handle: number): string;
 }
 
@@ -88,9 +89,15 @@ export class WALrusError extends Error {
   }
 }
 
+function platformDir(): string {
+  const platform = `${process.platform}-${process.arch}`;
+  return join(__dirname, "..", "prebuilds", platform);
+}
+
 function loadNative(): NativeAPI {
-  // Load the prebuilt addon; fall back to a sibling build for development.
+  // Prebuilds first (npm package); fall back to in-repo dev builds.
   const candidates = [
+    join(platformDir(), "walrus.node"),
     join(__dirname, "..", "native", "build", "Release", "walrus.node"),
     join(__dirname, "..", "..", "..", "bindings", "node", "native", "build", "Release", "walrus.node"),
   ];
@@ -99,8 +106,10 @@ function loadNative(): NativeAPI {
     throw new Error("@walrus/db: native addon not built. Run `npm run build`.");
   }
   const native: NativeAPI = require(addonPath);
-  // Locate the bundled shared library.
+  // Locate the bundled shared library (Go core).
   const libCandidates = [
+    join(platformDir(), "libwalrus.dylib"),
+    join(platformDir(), "libwalrus.so"),
     join(__dirname, "..", "lib", findLib(join(__dirname, "..", "lib"))),
     join(__dirname, "..", "..", "..", "libwalrus.dylib"),
   ];
@@ -110,6 +119,17 @@ function loadNative(): NativeAPI {
   }
   native.load(libPath);
   return native;
+}
+
+/** Absolute path to the bundled litestream VFS read extension for the host
+ *  SQLite (bun native read mode, spec §9). Load with:
+ *  db.loadExtension(path, "sqlite3_walrusvfs_init"). */
+export function vfsExtensionPath(): string {
+  const p = join(platformDir(), "libwalrus_vfs.dylib");
+  if (!existsSync(p)) {
+    throw new Error(`@walrus/db: VFS extension not found for ${process.platform}-${process.arch}`);
+  }
+  return p;
 }
 
 function findLib(dir: string): string {
@@ -180,6 +200,26 @@ export class WALrusDatabase {
     const deadline = Date.now() + this.defaultDeadlineMs;
     const res = this.native.read(this.handle, request, deadline);
     return unwrap(res) as ReadResult;
+  }
+
+  /**
+   * readDsn returns a SQLite DSN (file:...?vfs=walrus_N&mode=ro) that the
+   * HOST's own SQLite can open to read through litestream VFS natively,
+   * plus the replica URL for the loadable-extension path. On Bun:
+   *   1. Database.setCustomSQLite(...) once
+   *   2. scratch = new Database(":memory:");
+   *      scratch.loadExtension("<pkg>/prebuilds/libwalrus_vfs", "sqlite3_walrusvfs_init")
+   *      scratch.exec(`SELECT walrus_vfs_attach('<vfs>', '<replica_url>', key, secret)`)
+   *      scratch.close()
+   *   3. new Database("file:...?vfs=<vfs>&mode=ro")
+   * Reads stream LTX pages from object storage; no lease, read-only
+   * (remote-committed state only, spec §9).
+   */
+  async readDsn(options: { database: DatabaseDescriptor }): Promise<{ dsn: string; vfs: string; replica_url?: string }> {
+    const request = JSON.stringify({ descriptor: options.database });
+    const deadline = Date.now() + this.defaultDeadlineMs;
+    const res = this.native.readDsn(this.handle, request, deadline);
+    return unwrap(res) as { dsn: string; vfs: string; replica_url?: string };
   }
 
   async close(): Promise<void> {

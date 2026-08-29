@@ -49,6 +49,14 @@ func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error
 	return &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db}, nil
 }
 
+// ReadDSN returns the SQLite DSN for the host's own SQLite connection to
+// read this database through the shared litestream VFS (spec §9 read mode).
+// The VFS is registered process-wide by the runtime, so any SQLite in the
+// process (bun:sqlite, custom sqlite builds) can open it natively.
+func (d *Database) ReadDSN(ctx context.Context, dbName string) string {
+	return fmt.Sprintf("file:walrus_%s.db?vfs=%s&mode=ro", sanitize(dbName), d.VFSName)
+}
+
 // Key identifies this session's database for the runtime's read-instance
 // cache (spec §10).
 func (s *Session) Key() string { return s.dbVFS.Key }
