@@ -1,1 +1,6 @@
 .env
+.dylib.dSYM/
+build/
+dist/
+*.dylib
+*.node

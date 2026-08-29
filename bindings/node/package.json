@@ -1,0 +1,13 @@
+{
+  "name": "@walrus/db",
+  "version": "0.1.0",
+  "description": "WALrus embedded SQLite runtime binding for Node.js and Bun",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node-gyp rebuild -C native && tsc -p .",
+    "test": "bun test ../bun/*.test.ts"
+  },
+  "gypfile": true,
+  "license": "MIT"
+}

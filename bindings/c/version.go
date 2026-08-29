@@ -1,0 +1,5 @@
+package c
+
+// CoreVersion is the WALrus Go core version. The addon pins an exact
+// compatible core major/minor (spec §16).
+const CoreVersion = "0.1.0"
