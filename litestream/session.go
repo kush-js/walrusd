@@ -49,6 +49,10 @@ func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error
 	return &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db}, nil
 }
 
+// Key identifies this session's database for the runtime's read-instance
+// cache (spec §10).
+func (s *Session) Key() string { return s.dbVFS.Key }
+
 // OpenWrite opens a read-write session with VFS write mode enabled from the
 // start. Litestream only honors write mode at VFS-open; a read-mode open
 // would block waiting for remote LTX files that do not exist for a new

@@ -82,3 +82,52 @@ describe("WALrusDatabase", () => {
     await db.close();
   });
 });
+
+// Live S3 (R2) end-to-end through the whole native stack (spec §15).
+// Enabled only when WALRUS_TEST_S3_* is set.
+const s3env = () => ({
+  endpoint: process.env.WALRUS_TEST_S3_ENDPOINT,
+  bucket: process.env.WALRUS_TEST_S3_BUCKET,
+  access_key_id: process.env.WALRUS_TEST_S3_ACCESS_KEY_ID,
+  secret_access_key: process.env.WALRUS_TEST_S3_SECRET_ACCESS_KEY,
+});
+
+test("live R2 write/flush/read-back", async () => {
+  const s3 = s3env();
+  if (!s3.endpoint || !s3.bucket || !s3.access_key_id || !s3.secret_access_key) {
+    console.log("WALRUS_TEST_S3_* not set; skipping live R2 test");
+    return;
+  }
+  const prefix = `bun-live-${Date.now()}`;
+  const db = new WALrusDatabase({ owner: "bun-live" });
+  const d: DatabaseDescriptor = {
+    database_id: `${prefix}/users/live_1`,
+    storage: {
+      provider: "s3",
+      endpoint: s3.endpoint!,
+      region: "auto",
+      bucket: s3.bucket!,
+      root_prefix: prefix,
+      access_key_id: s3.access_key_id!,
+      secret_access_key: s3.secret_access_key!,
+    },
+    credentials: {
+      access_key_id: s3.access_key_id!,
+      secret_access_key: s3.secret_access_key!,
+    },
+  };
+  const res = await db.write({
+    database: d,
+    idempotencyKey: "live_1",
+    statements: [
+      { sql: "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)" },
+      { sql: "INSERT INTO t VALUES (1, 'from-bun-live')" },
+    ],
+  });
+  expect(typeof res.txid).toBe("string");
+  expect(res.txid).not.toBe("");
+
+  const rows = await db.read({ database: d, sql: "SELECT v FROM t WHERE id = 1" });
+  expect(rows.rows[0].v).toBe("from-bun-live");
+  await db.close();
+}, 60_000);

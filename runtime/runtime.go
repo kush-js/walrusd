@@ -7,9 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"walrus/cache"
 	"walrus/identity"
 	"walrus/lease"
 	"walrus/litestream"
+	"walrus/observability"
 	"walrus/storage"
 	"walrus/walruserr"
 )
@@ -42,13 +44,18 @@ func DefaultConfig() Config {
 
 // Runtime is the WALrus runtime surface (spec §11).
 type Runtime struct {
-	cfg    Config
-	bridge *litestream.Bridge
-	leases *lease.Manager
+	cfg     Config
+	bridge  *litestream.Bridge
+	leases  *lease.Manager
+	reads   *cache.Cache
+	metrics *observability.Registry
 
 	mu  sync.Mutex
 	dbs map[string]*litestream.Database // database key -> registered VFS
 }
+
+// Metrics exposes the runtime's privacy-safe counter registry (spec §14).
+func (r *Runtime) Metrics() *observability.Registry { return r.metrics }
 
 // New validates configuration (spec §16: reject settings that release a
 // lease without a confirmed flush) and builds the runtime.
@@ -62,10 +69,12 @@ func New(store storage.ConditionalStore, owner string, cfg Config) (*Runtime, er
 			"lease duration must exceed request timeout + flush time + skew allowance")
 	}
 	return &Runtime{
-		cfg:    cfg,
-		bridge: litestream.NewBridge(cfg.Litestream),
-		leases: lease.NewManager(store, owner, cfg.Lease, nil),
-		dbs:    make(map[string]*litestream.Database),
+		cfg:     cfg,
+		bridge:  litestream.NewBridge(cfg.Litestream),
+		leases:  lease.NewManager(store, owner, cfg.Lease, nil),
+		reads:   cache.New(cfg.MaxReadInstances, cfg.ReadInstanceIdleTTL),
+		metrics: observability.NewRegistry(),
+		dbs:     make(map[string]*litestream.Database),
 	}, nil
 }
 
@@ -98,7 +107,8 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 
 // WithRead serves a read against the remote committed replica state
 // (spec §9). No lease is taken; only state Litestream observed remotely is
-// visible.
+// visible. Read sessions are cached per database with LRU + idle-TTL
+// eviction (spec §10); a cache miss simply opens a fresh session.
 func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) error {
 	db, err := d.Identity()
 	if err != nil {
@@ -108,12 +118,29 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	if err != nil {
 		return err
 	}
+	if inst, ok := r.reads.Get(db.String()); ok {
+		if s, ok := inst.(*litestream.Session); ok {
+			if err := fn(s.SQLConn()); err == nil {
+				return nil
+			}
+			// Session may be stale after remote state moved; evict and
+			// fall through to a fresh open (correctness never depends on
+			// the cache).
+			r.reads.Evict(db.String())
+		}
+	}
 	session, err := vfs.OpenRead(ctx, db.ID)
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open read session", err)
 	}
-	defer session.Close()
-	return fn(session.SQLConn())
+	if err := fn(session.SQLConn()); err != nil {
+		session.Close()
+		return err
+	}
+	// Keep the session for reuse; the cache takes ownership (bounded LRU
+	// with idle-TTL eviction, spec §10).
+	r.reads.Put(session)
+	return nil
 }
 
 // WriteResult carries the remote TXID observed after a successful write for
@@ -150,12 +177,25 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	if err != nil {
 		return zero, err
 	}
+	dbKey := db.String()
 
 	// 1. Conditionally acquire the lease (spec §7.2).
 	held, err := r.leases.Acquire(ctx, db)
 	if err != nil {
+		cls := walruserr.ClassOf(err)
+		r.metrics.Record(dbKey, func(m *observability.Metrics) {
+			if cls == walruserr.ClassBusy {
+				m.LeaseBusyRetries++
+			} else if cls == walruserr.ClassLeaseConflict {
+				m.LeaseCASConflicts++
+			}
+		})
 		return zero, err
 	}
+	r.metrics.Record(dbKey, func(m *observability.Metrics) {
+		m.LeaseAcquireAttempts++
+		m.LeaseAcquireSucceeded++
+	})
 
 	// From here, the lease must be resolved: released on success, or left
 	// to expire on failure paths that cannot safely release (spec §8).
@@ -171,6 +211,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		session.Close()
 		return zero, r.failWithLease(ctx, held, err)
 	} else if txid != "" {
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.IdempotencyDedupeHits++ })
 		session.Close()
 		if err := r.leases.Release(ctx, held); err != nil {
 			return zero, err
@@ -186,9 +227,11 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	// flush fails, the recorded value is simply never confirmed; the retry
 	// with the same key either reads it (already committed) or re-runs.
 	if err := fn(session.SQLConn()); err != nil {
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactionFailures++ })
 		session.Close()
 		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "transaction failed", err))
 	}
+	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactions++ })
 	nextTXID, err := session.NextTXID()
 	if err != nil {
 		session.Close()
@@ -200,13 +243,25 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	}
 
 	// 4. Disable write mode = the mandatory synchronous flush barrier.
+	flushStart := time.Now()
 	if err := session.DisableWrite(); err != nil {
+		r.metrics.Record(dbKey, func(m *observability.Metrics) {
+			if walruserr.ClassOf(err) == walruserr.ClassConflict {
+				m.FlushConflictErrors++
+			}
+			m.FlushFailures++
+			m.IdempotencyAmbiguousOutcomes++
+		})
 		session.Close()
 		// SQL may be locally committed but remote flush was not confirmed:
 		// never acknowledge, never release (caller retries with the same
 		// idempotency key; lease is left to expire).
 		return zero, r.flushFailure(ctx, held, err)
 	}
+	r.metrics.Record(dbKey, func(m *observability.Metrics) {
+		m.FlushSuccesses++
+		m.FlushDurationMicros += uint64(time.Since(flushStart).Microseconds())
+	})
 
 	txid, txidErr := session.TXID()
 	if txidErr != nil {
@@ -222,9 +277,13 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
+		if walruserr.ClassOf(err) == walruserr.ClassLeaseConflict {
+			r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleaseConflicts++ })
+		}
 		session.Close()
 		return zero, err
 	}
+	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleased++ })
 	session.Close()
 	return result, nil
 }
