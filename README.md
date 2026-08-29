@@ -20,6 +20,56 @@ See [docs/specs.md](docs/specs.md) for the design and invariants and
 [docs/usage.md](docs/usage.md) for the full guide (Go core, `@walrus/db`,
 C ABI, error model, provider conformance, configuration).
 
+## How it fits together
+
+```mermaid
+flowchart LR
+    subgraph API["API process (disposable compute)"]
+        direction TB
+        JS["Your code\n(Node.js / Bun / Go)"] --> RT["WALrus runtime"]
+        RT --> LF["Litestream VFS (CGO)"]
+    end
+
+    subgraph OS["Object storage (R2 / S3)"]
+        direction TB
+        L["lease.json\n(CAS serialized)"]
+        R["replica/\n(LTX files)"]
+    end
+
+    LF -- "read: no lease,\nremote-committed state" --> R
+    LF -- "write: one LTX\nflush per transaction" --> R
+    RT -- "conditional acquire/release\n(If-Match / If-None-Match)" --> L
+
+    API2["Any other API instance"] -.-> OS
+```
+
+Any instance can serve any request — there is no routing layer. Mutual
+exclusion comes from the lease object, not from where a request lands.
+
+### Write path
+
+Every mutation follows the same five steps; the ack means the data is in
+object storage, not just in some process's memory:
+
+```mermaid
+sequenceDiagram
+    participant C as Your code
+    participant R as Runtime
+    participant L as lease.json (CAS)
+    participant V as Litestream VFS
+    participant O as replica/ (LTX)
+
+    C->>R: WithWrite(descriptor, idempotencyKey, fn)
+    R->>L: acquire (If-None-Match: * / If-Match)
+    L-->>R: lease held
+    R->>V: open write-mode session
+    C->>V: SQL transaction (fn)
+    V->>O: flush LTX file (synchronous, before release)
+    R->>L: release (If-Match)
+    R-->>C: ack + TXID
+    Note over C,O: crash anywhere? retry with the same<br/>idempotency key — the result is deduplicated
+```
+
 ## Quick start (Bun)
 
 Build the native pieces once:
