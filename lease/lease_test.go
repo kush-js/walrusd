@@ -28,7 +28,7 @@ func newManager(t *testing.T, mutate func(*lease.Config)) (*lease.Manager, *stor
 
 func db(t *testing.T) identity.DatabaseID {
 	t.Helper()
-	d, err := identity.NewDatabaseID("org_1", "user_1")
+	d, err := identity.NewDatabaseID("users/user_1")
 	if err != nil {
 		t.Fatal(err)
 	}

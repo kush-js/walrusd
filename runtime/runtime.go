@@ -100,7 +100,7 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 // (spec §9). No lease is taken; only state Litestream observed remotely is
 // visible.
 func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) error {
-	db, err := d.DatabaseID()
+	db, err := d.Identity()
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
 	}
@@ -108,7 +108,7 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	if err != nil {
 		return err
 	}
-	session, err := vfs.OpenRead(ctx, db.UserID)
+	session, err := vfs.OpenRead(ctx, db.ID)
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open read session", err)
 	}
@@ -142,7 +142,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	if fn == nil {
 		return zero, walruserr.New(walruserr.ClassInvalidArgument, "write callback is required")
 	}
-	db, err := d.DatabaseID()
+	db, err := d.Identity()
 	if err != nil {
 		return zero, walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
 	}
@@ -159,7 +159,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 
 	// From here, the lease must be resolved: released on success, or left
 	// to expire on failure paths that cannot safely release (spec §8).
-	session, err := vfs.OpenWrite(ctx, db.UserID)
+	session, err := vfs.OpenWrite(ctx, db.ID)
 	if err != nil {
 		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open write session", err))
 	}

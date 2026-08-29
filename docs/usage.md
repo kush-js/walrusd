@@ -28,18 +28,22 @@ runtime owns the whole lifecycle (spec §11).
 
 ## Object layout
 
-Everything for a user database lives under one prefix in the org bucket
-(spec §4):
+Everything for a database lives under one prefix derived from your database
+ID (spec §4):
 
 ```
-<root_prefix>/walrus/v1/users/<encoded-user-id>/
+<root_prefix>/<database_id>/
   lease.json        # lease record (CAS authority: object ETag)
   replica/          # Litestream replica (LTX files)
 ```
 
-IDs must be path-safe: no `/`, `?`, `#`, and no percent-encoding needed.
-Bucket names, prefixes, and credentials are issued by the control plane —
-**never accept them from end users** (spec §11).
+The database ID is yours to choose — `user_1a4b`, `users/u1`,
+`acme/agents/a7` — any clean, path-safe relative path (no leading/trailing
+or duplicate slashes, no `.`/`..` segments, no `?`/`#`, nothing needing
+percent-encoding). Databases with different IDs are fully independent:
+separate lease, separate replica chain. Bucket names, prefixes, and
+credentials are issued by the control plane — **never accept them from end
+users** (spec §11).
 
 ---
 
@@ -102,8 +106,7 @@ timeout plus skew allowance; defaults (30s lease, 20s request timeout,
 
 ```go
 d := runtime.DatabaseDescriptor{
-    OrganizationID: "org_9f2c",   // path-safe
-    UserID:         "user_1a4b",  // path-safe
+    DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
     Storage: litestream.Profile{
         Provider:   "s3",         // "s3" (R2/S3-compatible) or "file"
         Endpoint:   "https://<account>.r2.cloudflarestorage.com",
@@ -228,8 +231,7 @@ const db = new WALrusDatabase({
 });
 
 const descriptor = {
-  organization_id: "org_9f2c",
-  user_id: "user_1a4b",
+  database_id: "users/user_1a4b",
   storage: {
     provider: "s3",
     endpoint: "https://<account>.r2.cloudflarestorage.com",
@@ -323,7 +325,7 @@ defaulted from spec §16):
 
 ```json
 {
-  "descriptor": { "organization_id": "org", "user_id": "user", "storage": { "provider": "s3", "endpoint": "...", "bucket": "b", "root_prefix": "p" }, "credentials": { "access_key_id": "...", "secret_access_key": "..." } },
+  "descriptor": { "database_id": "users/user_1", "storage": { "provider": "s3", "endpoint": "...", "bucket": "b", "root_prefix": "p" }, "credentials": { "access_key_id": "...", "secret_access_key": "..." } },
   "idempotency_key": "create-event-42",
   "statements": [ { "sql": "INSERT INTO events VALUES (?, ?)", "params": [42, "hello"] } ]
 }

@@ -44,10 +44,9 @@ type ReadRequest struct {
 }
 
 type descriptorJSON struct {
-	OrganizationID string      `json:"organization_id"`
-	UserID         string      `json:"user_id"`
-	Storage        profileJSON `json:"storage"`
-	Credentials    credsJSON   `json:"credentials"`
+	DatabaseID  string      `json:"database_id"`
+	Storage     profileJSON `json:"storage"`
+	Credentials credsJSON   `json:"credentials"`
 }
 
 type profileJSON struct {
@@ -158,9 +157,8 @@ func (a *Adapter) Close() error { return nil }
 
 func ddescriptor(d descriptorJSON) runtime.DatabaseDescriptor {
 	return runtime.DatabaseDescriptor{
-		OrganizationID: d.OrganizationID,
-		UserID:         d.UserID,
-		Storage:        runtimeProfile(d.Storage),
+		DatabaseID: d.DatabaseID,
+		Storage:    runtimeProfile(d.Storage),
 		Credentials: runtime.StaticCredentials{
 			AccessKeyID:     d.Credentials.AccessKeyID,
 			SecretAccessKey: d.Credentials.SecretAccessKey,

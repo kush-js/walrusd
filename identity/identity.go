@@ -1,65 +1,66 @@
 // Package identity derives canonical, tenant-safe database IDs and object
-// paths from trusted (organization_id, user_id) pairs. Nothing else may
-// construct storage keys (spec §4).
+// paths from trusted database IDs. Nothing else may construct storage keys
+// (spec §4).
 package identity
 
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 )
 
-// DatabaseID is the canonical identifier "org/<org>/user/<user>".
+// DatabaseID is the caller's canonical database identifier: a relative,
+// path-safe object-store key such as "user_1a4b", "users/u1", or
+// "acme/agents/a7". WALrus imposes no structure on it; the object layout is
+// simply "<root_prefix>/<database_id>/". Databases with different IDs are
+// fully independent (separate lease and replica prefixes), so use distinct
+// ID paths to partition databases however your product needs.
 type DatabaseID struct {
-	OrganizationID string
-	UserID         string
+	ID string
 }
 
-// NewDatabaseID builds a DatabaseID from trusted control-plane values.
-// It rejects empty or path-unsafe components so a malformed tenant ID can
-// never escape the object-storage prefix.
-func NewDatabaseID(organizationID, userID string) (DatabaseID, error) {
-	if organizationID == "" {
-		return DatabaseID{}, fmt.Errorf("identity: organization_id is required")
+// NewDatabaseID validates a trusted database ID. It must be non-empty, use
+// only path-safe segments, contain no "." or ".." segments, and have no
+// leading/trailing/duplicate slashes — a malformed ID must never escape the
+// configured root prefix.
+func NewDatabaseID(id string) (DatabaseID, error) {
+	if id == "" {
+		return DatabaseID{}, fmt.Errorf("identity: database_id is required")
 	}
-	if userID == "" {
-		return DatabaseID{}, fmt.Errorf("identity: user_id is required")
+	if strings.HasPrefix(id, "/") || strings.HasSuffix(id, "/") || strings.Contains(id, "//") {
+		return DatabaseID{}, fmt.Errorf("identity: database_id %q is not a clean relative path", id)
 	}
-	for _, id := range []string{organizationID, userID} {
-		if strings.ContainsAny(id, "/?#") || id != url.PathEscape(id) {
-			return DatabaseID{}, fmt.Errorf("identity: id %q is not path-safe", id)
+	for _, seg := range strings.Split(id, "/") {
+		if seg == "." || seg == ".." {
+			return DatabaseID{}, fmt.Errorf("identity: database_id %q must not contain %q segments", id, seg)
+		}
+		if strings.ContainsAny(seg, "/?#") || seg != url.PathEscape(seg) {
+			return DatabaseID{}, fmt.Errorf("identity: database_id segment %q is not path-safe", seg)
 		}
 	}
-	return DatabaseID{OrganizationID: organizationID, UserID: userID}, nil
-}
-
-// String returns the canonical database ID: "org/<org>/user/<user>".
-func (d DatabaseID) String() string {
-	return "org/" + d.OrganizationID + "/user/" + d.UserID
-}
-
-// ParseDatabaseID validates a canonical database ID string. Use for
-// defensive re-validation of descriptors received over the wire.
-func ParseDatabaseID(s string) (DatabaseID, error) {
-	org, rest, ok := strings.Cut(s, "/user/")
-	if !ok {
-		return DatabaseID{}, fmt.Errorf("identity: invalid database id %q", s)
+	clean := path.Clean(id)
+	if clean != id {
+		return DatabaseID{}, fmt.Errorf("identity: database_id %q is not a clean relative path", id)
 	}
-	orgID, ok := strings.CutPrefix(org, "org/")
-	if !ok {
-		return DatabaseID{}, fmt.Errorf("identity: invalid database id %q", s)
-	}
-	return NewDatabaseID(orgID, rest)
+	return DatabaseID{ID: id}, nil
 }
 
-// StoragePrefix returns the object-storage prefix for a database under an
-// organization root: "<root>/walrus/v1/users/<encoded-user-id>/" (spec §4).
+// String returns the database ID verbatim.
+func (d DatabaseID) String() string { return d.ID }
+
+// ParseDatabaseID validates a database ID string. Use for defensive
+// re-validation of descriptors received over the wire.
+func ParseDatabaseID(s string) (DatabaseID, error) { return NewDatabaseID(s) }
+
+// StoragePrefix returns the object-storage prefix for a database under a
+// root: "<root_prefix>/<database_id>/" (spec §4).
 func (d DatabaseID) StoragePrefix(rootPrefix string) string {
 	prefix := strings.TrimSuffix(rootPrefix, "/")
 	if prefix != "" {
 		prefix += "/"
 	}
-	return prefix + "walrus/v1/users/" + url.PathEscape(d.UserID) + "/"
+	return prefix + d.ID + "/"
 }
 
 // LeaseKey returns the lease object key for this database.

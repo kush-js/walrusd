@@ -29,11 +29,10 @@ func newTestRuntime(t *testing.T, owner string) *runtime.Runtime {
 	return rt
 }
 
-func descriptor(t *testing.T, org, user string) runtime.DatabaseDescriptor {
+func descriptor(t *testing.T, id string) runtime.DatabaseDescriptor {
 	t.Helper()
 	return runtime.DatabaseDescriptor{
-		OrganizationID: org,
-		UserID:         user,
+		DatabaseID: id,
 		Storage: litestream.Profile{
 			Provider: "file",
 			FileRoot: t.TempDir(),
@@ -44,7 +43,7 @@ func descriptor(t *testing.T, org, user string) runtime.DatabaseDescriptor {
 
 func TestWithWriteRequiresIdempotencyKey(t *testing.T) {
 	rt := newTestRuntime(t, "api-1")
-	d := descriptor(t, "org_1", "user_1")
+	d := descriptor(t, "users/user_1")
 	_, err := rt.WithWrite(context.Background(), d, "", func(conn *sql.Conn) error { return nil })
 	if class(err) != "DB_INVALID_ARGUMENT" {
 		t.Fatalf("class = %q, want DB_INVALID_ARGUMENT", class(err))
@@ -53,7 +52,7 @@ func TestWithWriteRequiresIdempotencyKey(t *testing.T) {
 
 func TestWithWriteLifecycle(t *testing.T) {
 	rt := newTestRuntime(t, "api-1")
-	d := descriptor(t, "org_1", "user_1")
+	d := descriptor(t, "users/user_1")
 
 	res, err := rt.WithWrite(context.Background(), d, "op_1", func(conn *sql.Conn) error {
 		if _, err := conn.ExecContext(context.Background(), `
@@ -88,10 +87,10 @@ func TestWithWriteLifecycle(t *testing.T) {
 
 func TestWithWriteSecondWriterWaits(t *testing.T) {
 	rt := newTestRuntime(t, "api-1")
-	d := descriptor(t, "org_1", "user_1")
+	d := descriptor(t, "users/user_1")
 
 	// Hold the lease externally to simulate a concurrent writer.
-	db, _ := identity.NewDatabaseID(d.OrganizationID, d.UserID)
+	db, _ := identity.NewDatabaseID(d.DatabaseID)
 	_ = rt
 	store := storage.NewMemoryStore()
 	lm := lease.NewManager(store, "api-other", lease.DefaultConfig(), nil)
@@ -119,7 +118,7 @@ func TestWithWriteSecondWriterWaits(t *testing.T) {
 
 func TestWriteAfterReleaseSeesFlushedState(t *testing.T) {
 	rt := newTestRuntime(t, "api-1")
-	d := descriptor(t, "org_1", "user_1")
+	d := descriptor(t, "users/user_1")
 
 	if _, err := rt.WithWrite(context.Background(), d, "op_a", func(conn *sql.Conn) error {
 		_, err := conn.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS t (v TEXT)`)

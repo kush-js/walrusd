@@ -41,8 +41,7 @@ const db = new WALrusDatabase({ owner: "my-api-instance" });
 
 // The descriptor is issued by your control plane — never by end users.
 const d = {
-  organization_id: "org_acme",
-  user_id: "user_1",
+  database_id: "users/user_1",   // your ID; objects land at <root_prefix>/users/user_1/
   storage: { provider: "file", file_root: "/tmp/walrus-quickstart" },
   credentials: {},
 };

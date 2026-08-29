@@ -26,7 +26,7 @@ Load balancer -> any stateless API -> embedded WALrus runtime
 
 ### Goals
 
-- One logical SQLite database per `(organization_id, user_id)`.
+- One logical SQLite database per application-chosen `database_id`.
 - One object-storage bucket/configuration per organization.
 - Basemnt-managed and customer-controlled object storage.
 - Stateless API instances with no affinity requirement.
@@ -61,10 +61,10 @@ Litestream already maintains the authoritative logical database state as an orde
 
 ## 4. Tenant identity and object layout
 
-The control plane resolves authenticated requests to `organization_id` and `user_id`. A shared Go package creates the canonical database ID:
+The embedding application owns database identity: each database is one application-chosen `database_id` — a canonical, path-safe relative key (for example `user_1a4b`, `users/u1`, or `acme/agents/a7`). A shared Go package validates it and derives all object paths:
 
 ```text
-database_id = "org/<organization_id>/user/<user_id>"
+database_id = "<application-chosen relative path>"
 ```
 
 Never use mutable names, a worker/API identity, request IDs, or client-supplied storage keys in this identifier.
@@ -76,16 +76,20 @@ provider, endpoint, region, bucket, root_prefix,
 credential_reference, encryption_policy, capability_result
 ```
 
-Recommended bucket layout:
+Bucket layout:
 
 ```text
-walrus/v1/users/<encoded-user-id>/
+<root_prefix>/<database_id>/
   lease.json
   replica/                 # Litestream LTX files and its own metadata
   metadata/schema.json
 ```
 
-`encoded-user-id` must be canonical and path-safe. Database paths and lease paths are always derived by trusted code from the storage profile and canonical database ID.
+`database_id` is chosen by the embedding application (for example
+`user_1a4b`, `users/u1`, or `acme/agents/a7`) and must be a canonical,
+path-safe relative key. WALrus imposes no `users/`-style structure on it.
+Database paths and lease paths are always derived by trusted code from the
+storage profile and canonical database ID.
 
 ## 5. Object storage requirements
 
@@ -144,7 +148,7 @@ Every database has exactly one lease object at `lease.json`:
 ```json
 {
   "format_version": 1,
-  "database_id": "org/org_123/user/user_456",
+  "database_id": "users/user_456",
   "state": "held",
   "owner": "api-7f5c",
   "lease_id": "4b48dac0-1e4a-4418-9c6b-9ac5e51e0b61",
@@ -281,9 +285,7 @@ The API receives a trusted descriptor from the Basemnt control plane:
 
 ```go
 type DatabaseDescriptor struct {
-    OrganizationID string
-    UserID         string
-    DatabaseID     string
+    DatabaseID     string           // application-chosen, path-safe relative key
     StorageProfile StorageProfile
     Credentials    CredentialSource // short-lived, scoped credentials
 }
@@ -480,7 +482,7 @@ Validate at startup that request timeout plus expected flush duration is below l
 
 ## 17. Invariants
 
-1. Go, Node.js, and Bun bindings all use one canonical `(organization_id, user_id)` database ID.
+1. Go, Node.js, and Bun bindings all use one canonical application-chosen `database_id`.
 2. Object storage is the durable source of the SQLite/LTX replica and lease record.
 3. No API process writes a database without first conditionally acquiring its lease.
 4. Lease acquisition and release always use the object version/ETag returned by the prior read/create.

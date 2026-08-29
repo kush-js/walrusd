@@ -36,8 +36,10 @@ export interface StorageProfile {
 }
 
 export interface DatabaseDescriptor {
-  organization_id: string;
-  user_id: string;
+  /** Caller's canonical database ID: a path-safe relative key such as
+   *  "user_1a4b" or "acme/agents/a7". Objects live at
+   *  "<root_prefix>/<database_id>/". */
+  database_id: string;
   storage: StorageProfile;
   credentials: { access_key_id?: string; secret_access_key?: string };
 }

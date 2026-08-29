@@ -6,9 +6,8 @@ import { WALrusDatabase, WALrusError, type DatabaseDescriptor } from "../node/sr
 
 const ROOT = process.env.WALRUS_TEST_FILE_ROOT ?? "/tmp/walrus-bun-test";
 
-const descriptor = (org: string, user: string): DatabaseDescriptor => ({
-  organization_id: org,
-  user_id: user,
+const descriptor = (id: string): DatabaseDescriptor => ({
+  database_id: id,
   storage: { provider: "file", file_root: ROOT },
   credentials: {},
 });
@@ -26,7 +25,7 @@ describe("WALrusDatabase", () => {
 
   test("write executes a batch with flush and read sees it", async () => {
     const db = new WALrusDatabase({ owner: "bun-test" });
-    const d = descriptor("org_test", "user_1");
+    const d = descriptor("users/user_1");
 
     const res = await db.write({
       database: d,
@@ -50,7 +49,7 @@ describe("WALrusDatabase", () => {
 
   test("write requires an idempotency key", async () => {
     const db = new WALrusDatabase({ owner: "bun-test" });
-    const d = descriptor("org_test", "user_2");
+    const d = descriptor("users/user_2");
     let err: any;
     try {
       await db.write({ database: d, idempotencyKey: "", statements: [{ sql: "SELECT 1" }] });
@@ -64,7 +63,7 @@ describe("WALrusDatabase", () => {
 
   test("second writer waits while the lease is held", async () => {
     const db = new WALrusDatabase({ owner: "bun-test-2", requestTimeoutMs: 2000 });
-    const d = descriptor("org_test", "user_3");
+    const d = descriptor("users/user_3");
     // Hold the lease via a slow write in one instance; a second instance's
     // write must serialize behind it (DB_BUSY or success after wait).
     const first = db.write({

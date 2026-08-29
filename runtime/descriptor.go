@@ -27,17 +27,20 @@ func (c StaticCredentials) AccessKey() (string, string, error) {
 	return c.AccessKeyID, c.SecretAccessKey, nil
 }
 
-// DatabaseDescriptor is issued by the Basemnt control plane (spec §11).
-// Bucket names, replica URLs, object prefixes, credentials, and database
-// IDs must NEVER come from end users.
+// DatabaseDescriptor is issued by the control plane (spec §11). Bucket
+// names, replica URLs, object prefixes, credentials, and database IDs must
+// NEVER come from end users.
 type DatabaseDescriptor struct {
-	OrganizationID string
-	UserID         string
-	Storage        litestream.Profile
-	Credentials    CredentialSource
+	// DatabaseID is the caller's canonical database identifier — a
+	// path-safe relative key such as "user_1a4b" or "acme/agents/a7".
+	// Objects live at "<root_prefix>/<database_id>/". Use whatever
+	// partitioning fits your product; WALrus imposes no structure.
+	DatabaseID  string
+	Storage     litestream.Profile
+	Credentials CredentialSource
 }
 
-// DatabaseID returns the canonical database ID for this descriptor.
-func (d DatabaseDescriptor) DatabaseID() (identity.DatabaseID, error) {
-	return identity.NewDatabaseID(d.OrganizationID, d.UserID)
+// Identity validates and returns the canonical database ID.
+func (d DatabaseDescriptor) Identity() (identity.DatabaseID, error) {
+	return identity.NewDatabaseID(d.DatabaseID)
 }
