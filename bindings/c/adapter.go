@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"walrus/lease"
 	"walrus/litestream"
 	"walrus/runtime"
-	"walrus/storage"
 	"walrus/walruserr"
 )
 
@@ -19,8 +19,8 @@ type Adapter struct {
 	rt *runtime.Runtime
 }
 
-// NewAdapter builds an Adapter over a ConditionalStore-backed runtime.
-func NewAdapter(store storage.ConditionalStore, owner string, cfg runtime.Config) (*Adapter, error) {
+// NewAdapter builds an Adapter over a lease-store-backed runtime.
+func NewAdapter(store lease.Store, owner string, cfg runtime.Config) (*Adapter, error) {
 	rt, err := runtime.New(store, owner, cfg)
 	if err != nil {
 		return nil, err

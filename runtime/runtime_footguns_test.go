@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"walrus/lease"
 	"walrus/litestream"
 	"walrus/runtime"
-	"walrus/storage"
 	"walrus/walruserr"
 )
 
 // footgunRuntime builds a runtime with caller-supplied timing for
 // lease-expiry tests. Duration must exceed RequestTimeout+skew (New enforces).
-func footgunRuntime(t *testing.T, store storage.ConditionalStore, owner string, reqTimeout, leaseDur, skew time.Duration) *runtime.Runtime {
+func footgunRuntime(t *testing.T, store lease.Store, owner string, reqTimeout, leaseDur, skew time.Duration) *runtime.Runtime {
 	t.Helper()
 	cfg := runtime.DefaultConfig()
 	cfg.Litestream.HydrationEnabled = false
@@ -94,7 +94,7 @@ func TestFootgunNestedTransactionRejected(t *testing.T) {
 // defense-in-depth for clock jumps. The safety contract: error + no
 // partial state + clean retry — never a success without confirmed flush.
 func TestFootgunLeaseExpiryGuard(t *testing.T) {
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	// Request budget 300ms; fn sleeps 900ms ignoring ctx, so every
 	// ctx-bound step after the sleep fails. Lease 600ms keeps New's
 	// Duration > RequestTimeout+skew validation happy.
@@ -172,7 +172,7 @@ func TestFootgunConcurrentReads(t *testing.T) {
 
 // Same database_id under different storage profiles must not share a VFS.
 func TestFootgunProfileIsolation(t *testing.T) {
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	cfg := runtime.DefaultConfig()
 	cfg.Litestream.HydrationEnabled = false
 	rt, err := runtime.New(store, "api-1", cfg)
@@ -227,7 +227,7 @@ func TestFootgunProfileIsolation(t *testing.T) {
 
 // Idempotent retry across instances returns the original TXID.
 func TestFootgunDedupAcrossInstances(t *testing.T) {
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	cfg := runtime.DefaultConfig()
 	cfg.Litestream.HydrationEnabled = false
 	newRT := func(owner string) *runtime.Runtime {

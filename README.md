@@ -1,14 +1,15 @@
 # WALrus
 
 WALrus ("Write-Ahead Log in object storage") is a horizontally scalable,
-multi-tenant SQLite runtime with one logical database per user. Object
-storage (Cloudflare R2 or any S3-compatible store with conditional writes)
-is the durable database; API processes are disposable compute running an
+multi-tenant SQLite runtime with one logical database per user. Cheap
+object storage (Wasabi, Backblaze B2, Sliplane, or any S3-compatible store
+— no conditional writes needed) is the durable database; Redis/Valkey
+holds the write leases; API processes are disposable compute running an
 embedded runtime.
 
 - Any API instance can serve any request for any user — no writer fleet, no
   routing layer, no sticky sessions.
-- Writes are serialized per user by a conditional object-storage lease and
+- Writes are serialized per user by a Redis/Valkey lease and
   acknowledged only after the transaction is flushed to object storage.
   Durability is confirmed by flush, never by elapsed time.
 - Reads see only remote-committed state, through Litestream's VFS, with no
@@ -30,15 +31,19 @@ flowchart LR
         RT --> LF["Litestream VFS (CGO)"]
     end
 
-    subgraph OS["Object storage (R2 / S3)"]
+    subgraph RED["Redis / Valkey (leases)"]
         direction TB
-        L["lease.json\n(CAS serialized)"]
+        L["lease key\n(CAS serialized)"]
+    end
+
+    subgraph OS["Object storage (S3)"]
+        direction TB
         R["replica/\n(LTX files)"]
     end
 
     LF -- "read: no lease,\nremote-committed state" --> R
     LF -- "write: one LTX\nflush per transaction" --> R
-    RT -- "conditional acquire/release\n(If-Match / If-None-Match)" --> L
+    RT -- "CAS acquire/release\n(Lua compare-and-swap)" --> L
 
     API2["Any other API instance"] -.-> OS
 ```
@@ -55,17 +60,17 @@ object storage, not just in some process's memory:
 sequenceDiagram
     participant C as Your code
     participant R as Runtime
-    participant L as lease.json (CAS)
+    participant L as lease key (Redis CAS)
     participant V as Litestream VFS
     participant O as replica/ (LTX)
 
     C->>R: WithWrite(descriptor, idempotencyKey, fn)
-    R->>L: acquire (If-None-Match: * / If-Match)
+    R->>L: acquire (SET NX / Lua CAS)
     L-->>R: lease held
     R->>V: open write-mode session
     C->>V: SQL transaction (fn)
     V->>O: flush LTX file (synchronous, before release)
-    R->>L: release (If-Match)
+    R->>L: release (Lua CAS)
     R-->>C: ack + TXID
     Note over C,O: crash anywhere? retry with the same<br/>idempotency key — the result is deduplicated
 ```
@@ -125,8 +130,10 @@ bun run quickstart.ts
 # read: hello from WALrus
 ```
 
-For production, swap `provider: "file"` for `"s3"` with your R2 endpoint,
-bucket, and org-scoped credentials. The same code runs unchanged on Node.js.
+For production, swap `provider: "file"` for `"s3"` with your bucket
+endpoint and org-scoped credentials, and pass `redisAddress` (plus
+optional `redisPassword`/`redisDB`) so all instances share leases.
+The same code runs unchanged on Node.js.
 An executable conformance suite for Bun lives in
 `bindings/bun/walrus.test.ts` (`bun test bindings/bun/walrus.test.ts` after
 pointing `WALRUS_TEST_FILE_ROOT` at a temp dir).
@@ -136,12 +143,9 @@ pointing `WALRUS_TEST_FILE_ROOT` at a temp dir).
 | Path | Contents |
 | --- | --- |
 | `identity/` | Canonical database IDs and object-key layout |
-| `storage/` | `ConditionalStore`: R2/S3 adapter, memory adapter, conformance suite |
-| `lease/` | Conditional object-storage lease: CAS acquire/release, expiry takeover, single-flight |
+| `lease/` | Redis/Valkey + memory lease stores, CAS acquire/release, expiry takeover, single-flight |
 | `litestream/` | Bridge to Litestream's CGO VFS: replica clients, flush barrier |
 | `runtime/` | `WithRead`/`WithWrite`: lease → transaction → flush → release, idempotency |
 | `walruserr/` | Classified `DB_*` error model |
 | `bindings/c/` | Narrow C ABI over the core (JSON envelopes) |
 | `bindings/node/` | Node-API addon + `@walrus/db` TypeScript wrapper |
-| `bindings/bun/` | Bun integration suite |
-| `docs/` | Specification (`specs.md`) and usage guide (`usage.md`) |

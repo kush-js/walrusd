@@ -11,6 +11,12 @@ import { join } from "node:path";
 import { WALrusDatabase, WALrusError } from "./dist/index.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "walrus-e2e-"));
+// Shared Redis leases when available: the same suite then exercises
+// cross-handle exclusion instead of the in-process memory fallback.
+const REDIS = process.env.WALRUS_TEST_REDIS_ADDR || undefined;
+if (REDIS) console.log(`e2e leases: redis ${REDIS}`);
+const freshDB = (owner = "e2e") =>
+  new WALrusDatabase({ owner: `${owner}-${Math.random().toString(36).slice(2)}`, redisAddress: REDIS });
 let seq = 0;
 const uniq = (p) => `${p}_${Date.now()}_${seq++}_${Math.random().toString(36).slice(2)}`;
 const d = (id, root = ROOT) => ({
@@ -18,7 +24,6 @@ const d = (id, root = ROOT) => ({
   storage: { provider: "file", file_root: root },
   credentials: {},
 });
-const freshDB = (owner = "e2e") => new WALrusDatabase({ owner: `${owner}-${Math.random().toString(36).slice(2)}` });
 
 describe("write/read contract", () => {
   test("write returns TXID and read sees flushed state", async () => {
@@ -152,25 +157,39 @@ describe("concurrency", () => {
     assert.equal(rows[0].n, N, "no lost updates under lease serialization");
     await db.close();
   });
-  // NOTE: each WALrusDatabase handle owns an independent in-process lease
-  // store (bindings/c/handle.go), so same-DB writes from two handles are
-  // NOT serialized today — cross-process S3 leases are an open P0 (see
-  // summary). This test pins the guaranteed contract: different databases
-  // are fully independent across handles.
-  test("two instances on different DBs are independent", async () => {
+
+  // Cross-handle exclusion needs shared leases (Redis). On the memory
+  // fallback each handle is independent, so different databases are used
+  // to pin isolation instead.
+  test(REDIS ? "two handles on one DB serialize via Redis" : "two instances on different DBs are independent", async () => {
     const a = freshDB("a");
     const b = freshDB("b");
-    const idA = uniq("users/xa");
-    const idB = uniq("users/xb");
-    const [r1, r2] = await Promise.all([
-      a.write({ database: d(idA), idempotencyKey: uniq("k"), statements: [{ sql: "CREATE TABLE IF NOT EXISTS t (v TEXT)" }, { sql: "INSERT INTO t VALUES ('a')" }] }),
-      b.write({ database: d(idB), idempotencyKey: uniq("k"), statements: [{ sql: "CREATE TABLE IF NOT EXISTS t (v TEXT)" }, { sql: "INSERT INTO t VALUES ('b')" }] }),
-    ]);
-    assert.ok(r1.txid && r2.txid);
-    const ra = await a.read({ database: d(idA), sql: "SELECT v FROM t LIMIT 1" });
-    const rb = await b.read({ database: d(idB), sql: "SELECT v FROM t LIMIT 1" });
-    assert.equal(ra.rows[0].v, "a");
-    assert.equal(rb.rows[0].v, "b");
+    if (!REDIS) {
+      const idA = uniq("users/xa");
+      const idB = uniq("users/xb");
+      const [r1, r2] = await Promise.all([
+        a.write({ database: d(idA), idempotencyKey: uniq("k"), statements: [{ sql: "CREATE TABLE IF NOT EXISTS t (v TEXT)" }, { sql: "INSERT INTO t VALUES ('a')" }] }),
+        b.write({ database: d(idB), idempotencyKey: uniq("k"), statements: [{ sql: "CREATE TABLE IF NOT EXISTS t (v TEXT)" }, { sql: "INSERT INTO t VALUES ('b')" }] }),
+      ]);
+      assert.ok(r1.txid && r2.txid);
+      const ra = await a.read({ database: d(idA), sql: "SELECT v FROM t LIMIT 1" });
+      const rb = await b.read({ database: d(idB), sql: "SELECT v FROM t LIMIT 1" });
+      assert.equal(ra.rows[0].v, "a");
+      assert.equal(rb.rows[0].v, "b");
+    } else {
+      const id = uniq("users/xshared");
+      await a.write({
+        database: d(id), idempotencyKey: uniq("k"),
+        statements: [{ sql: "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)" }],
+      });
+      const [r1, r2] = await Promise.all([
+        a.write({ database: d(id), idempotencyKey: uniq("k"), statements: [{ sql: "INSERT INTO t (v) VALUES ('a')" }] }),
+        b.write({ database: d(id), idempotencyKey: uniq("k"), statements: [{ sql: "INSERT INTO t (v) VALUES ('b')" }] }),
+      ]);
+      assert.ok(r1.txid && r2.txid && r1.txid !== r2.txid);
+      const { rows } = await a.read({ database: d(id), sql: "SELECT COUNT(*) AS n FROM t" });
+      assert.equal(rows[0].n, 2, "no lost updates across handles via Redis");
+    }
     await a.close();
     await b.close();
   });

@@ -76,8 +76,12 @@ export interface RuntimeOptions {
   owner: string;
   writeBufferRootPath?: string;
   requestTimeoutMs?: number;
+  /** Redis/Valkey address (host:port) for shared leases. Unset = in-process
+   *  memory leases (dev/single-process only; no cross-process exclusion). */
+  redisAddress?: string;
+  redisPassword?: string;
+  redisDB?: number;
 }
-
 /** Classified WALrus error (spec §11 required errors). */
 export class WALrusError extends Error {
   readonly code: string;
@@ -167,6 +171,9 @@ export class WALrusDatabase {
         config: {
           request_timeout_ms: options.requestTimeoutMs,
           write_buffer_root_path: options.writeBufferRootPath,
+          redis_address: options.redisAddress,
+          redis_password: options.redisPassword,
+          redis_db: options.redisDB,
         },
       })
     );

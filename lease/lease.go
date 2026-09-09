@@ -1,6 +1,6 @@
-// Package lease implements the conditional object-storage lease (spec §7):
-// CAS acquisition, release, expiry takeover, and bounded jittered retry.
-// The object store's version (ETag) is the CAS authority; epoch is
+// Package lease implements the Redis/Valkey-backed lease (spec §7): CAS
+// acquisition, release, expiry takeover, and bounded jittered retry. The
+// store's fencing token is the CAS authority; epoch is
 // diagnostics/generation bookkeeping only.
 package lease
 
@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"walrus/identity"
-	"walrus/storage"
 	"walrus/walruserr"
 )
 
@@ -71,9 +70,9 @@ func (c Config) now() time.Time {
 	return time.Now()
 }
 
-// Manager acquires and releases leases through storage CAS.
+// Manager acquires and releases leases through store CAS.
 type Manager struct {
-	store storage.ConditionalStore
+	store Store
 	cfg   Config
 	owner string
 	keys  keyFunc
@@ -84,13 +83,13 @@ type Manager struct {
 	flights  map[string]*sync.Mutex
 }
 
-// keyFunc derives the lease object key for a database.
+// keyFunc derives the lease key for a database.
 type keyFunc func(d identity.DatabaseID) string
 
 // NewManager builds a lease manager. owner is a unique API-process instance
-// ID used for diagnostics only (spec §7.1). keyFn derives the lease object
-// key; nil uses the canonical identity.LeaseKey with an empty root prefix.
-func NewManager(store storage.ConditionalStore, owner string, cfg Config, keyFn keyFunc) *Manager {
+// ID used for diagnostics only (spec §7.1). keyFn derives the lease key;
+// nil uses the canonical identity.LeaseKey with an empty root prefix.
+func NewManager(store Store, owner string, cfg Config, keyFn keyFunc) *Manager {
 	if cfg.Duration == 0 {
 		cfg = DefaultConfig()
 	}
@@ -106,8 +105,8 @@ func NewManager(store storage.ConditionalStore, owner string, cfg Config, keyFn 
 	}
 }
 
-// Held is a successfully acquired lease. Version is the CAS token that must
-// be used for the conditional release.
+// Held is a successfully acquired lease. Version is the fencing token that
+// must be used for the conditional release.
 type Held struct {
 	Record  Record
 	Version string
@@ -173,8 +172,7 @@ var errRetry = errors.New("lease: retry")
 
 func (m *Manager) acquireOnce(ctx context.Context, db identity.DatabaseID, key string) (*Held, error) {
 	body, version, err := m.store.Get(ctx, key)
-	if errors.Is(err, storage.ErrNotFound) {
-		// Absent: CreateIfAbsent with epoch 1 (spec §7.2 step 2).
+	if errors.Is(err, ErrNotFound) {
 		rec := m.newRecord(db, 0)
 		rec.Epoch = 1
 		return m.create(ctx, key, rec)
@@ -221,7 +219,7 @@ func (m *Manager) create(ctx context.Context, key string, rec Record) (*Held, er
 		return nil, err
 	}
 	version, err := m.store.CreateIfAbsent(ctx, key, body)
-	if errors.Is(err, storage.ErrAlreadyExists) || errors.Is(err, storage.ErrConflict) {
+	if errors.Is(err, ErrAlreadyExists) || errors.Is(err, ErrConflict) {
 		// Lost a concurrent create: reread and retry (spec §7.2 step 5).
 		return nil, fmt.Errorf("%w: lost create race", errRetry)
 	}
@@ -236,9 +234,9 @@ func (m *Manager) replace(ctx context.Context, key, expectedVersion string, rec 
 	if err != nil {
 		return nil, err
 	}
-	version, err := m.store.ReplaceIfVersion(ctx, key, expectedVersion, body)
-	if errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrNotFound) {
-		// Never overwrite without the retrieved version (spec §7.2 step 5).
+	version, err := m.store.ReplaceIfToken(ctx, key, expectedVersion, body)
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+		// Never overwrite without the retrieved token (spec §7.2 step 5).
 		return nil, fmt.Errorf("%w: CAS conflict on acquire", errRetry)
 	}
 	if err != nil {
@@ -247,10 +245,11 @@ func (m *Manager) replace(ctx context.Context, key, expectedVersion string, rec 
 	return &Held{Record: rec, Version: version, key: key}, nil
 }
 
-// Release conditionally replaces lease.json with state=released using the
-// version held by the lease owner (spec §7.3). It keeps the object and its
-// epoch history. A conflict returns ClassLeaseConflict: a successor owns the
-// lease; the release must not overwrite it.
+// Release conditionally replaces the lease with state=released using the
+// fencing token held by the lease owner (spec §7.3). It keeps the record
+// and its epoch history. A conflict (or a vanished key, e.g. store data
+// loss) returns ClassLeaseConflict: never ack on a token that is not
+// provably still ours — the caller retries idempotently.
 func (m *Manager) Release(ctx context.Context, held *Held) error {
 	if held == nil {
 		return nil
@@ -262,8 +261,8 @@ func (m *Manager) Release(ctx context.Context, held *Held) error {
 	if err != nil {
 		return err
 	}
-	_, err = m.store.ReplaceIfVersion(ctx, held.key, held.Version, body)
-	if errors.Is(err, storage.ErrConflict) {
+	_, err = m.store.ReplaceIfToken(ctx, held.key, held.Version, body)
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
 		return walruserr.New(walruserr.ClassLeaseConflict, "stale lease release (successor owns lease)")
 	}
 	if err != nil {

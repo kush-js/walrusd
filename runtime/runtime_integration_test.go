@@ -8,40 +8,32 @@ import (
 	"testing"
 	"time"
 
+	"walrus/lease"
 	"walrus/litestream"
 	"walrus/runtime"
-	"walrus/storage"
 )
 
-// TestWithWriteS3EndToEnd runs the full spec §8 write path against a real
-// S3-compatible store (Cloudflare R2 verified): lease over conditional
-// writes, litestream VFS transaction, synchronous LTX flush, and durable
-// read-back from a fresh runtime. Skipped unless WALRUS_TEST_S3_* is set.
-func TestWithWriteS3EndToEnd(t *testing.T) {
-	endpoint := os.Getenv("WALRUS_TEST_S3_ENDPOINT")
-	bucket := os.Getenv("WALRUS_TEST_S3_BUCKET")
-	keyID := os.Getenv("WALRUS_TEST_S3_ACCESS_KEY_ID")
-	secret := os.Getenv("WALRUS_TEST_S3_SECRET_ACCESS_KEY")
-	if endpoint == "" || bucket == "" || keyID == "" || secret == "" {
-		t.Skip("WALRUS_TEST_S3_* not set; skipping live end-to-end test")
+// TestWithWriteRedisEndToEnd runs the full spec §8 write path with leases in
+// Redis/Valkey shared by three runtimes (= three API instances): write on
+// one, idempotent retry on another, read-back on a third. The replica lives
+// on the local file provider to prove the object-storage side needs no
+// conditional-write support. Skipped unless WALRUS_TEST_REDIS_ADDR is set.
+func TestWithWriteRedisEndToEnd(t *testing.T) {
+	addr := os.Getenv("WALRUS_TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("WALRUS_TEST_REDIS_ADDR not set; skipping live Redis end-to-end test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Two runtimes = two API instances; both must see the same durable state.
-	// The lease store is the same R2 bucket used for the replica.
 	newRuntime := func(owner string) *runtime.Runtime {
 		t.Helper()
-		store, err := storage.NewS3(ctx, storage.S3Options{
-			Endpoint:        endpoint,
-			Bucket:          bucket,
-			AccessKeyID:     keyID,
-			SecretAccessKey: secret,
-		})
+		store, err := lease.NewRedisStore(ctx, lease.RedisOptions{Addr: addr})
 		if err != nil {
-			t.Fatalf("new s3 store: %v", err)
+			t.Fatalf("new redis store: %v", err)
 		}
+		t.Cleanup(func() { _ = store.Close() })
 		cfg := runtime.DefaultConfig()
 		cfg.Litestream.WriteBufferRootPath = t.TempDir()
 		rt, err := runtime.New(store, owner, cfg)
@@ -51,26 +43,28 @@ func TestWithWriteS3EndToEnd(t *testing.T) {
 		return rt
 	}
 
+	root := t.TempDir()
 	prefix := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
 	desc := func() runtime.DatabaseDescriptor {
 		return runtime.DatabaseDescriptor{
 			DatabaseID: prefix + "/users/user_1",
 			Storage: litestream.Profile{
-				Provider:   "s3",
-				Endpoint:   endpoint,
-				Region:     "auto",
-				Bucket:      bucket,
-				RootPrefix: prefix,
+				Provider: "file",
+				FileRoot: root,
 			},
-			Credentials: runtime.StaticCredentials{AccessKeyID: keyID, SecretAccessKey: secret},
+			Credentials: runtime.StaticCredentials{AccessKeyID: "k", SecretAccessKey: "s"},
 		}
 	}
 
 	// Write on instance 1.
 	w := newRuntime("api-1")
 	res, err := w.WithWrite(ctx, desc(), "seed", func(conn *sql.Conn) error {
+		if _, err := conn.ExecContext(ctx,
+			`CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)`); err != nil {
+			return err
+		}
 		_, err := conn.ExecContext(ctx,
-			"CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT); INSERT INTO notes (body) VALUES ('hello from walrus');")
+			`INSERT INTO notes (id, body) VALUES (1, 'hello from walrus')`)
 		return err
 	})
 	if err != nil {
@@ -84,8 +78,8 @@ func TestWithWriteS3EndToEnd(t *testing.T) {
 	// Retry with the same key on another instance must deduplicate.
 	r2 := newRuntime("api-2")
 	res2, err := r2.WithWrite(ctx, desc(), "seed", func(conn *sql.Conn) error {
-		t.Fatal("callback must not run for deduplicated write")
-		return nil
+		_, err := conn.ExecContext(ctx, `INSERT INTO notes (id, body) VALUES (2, 'SHOULD NOT RUN')`)
+		return err
 	})
 	if err != nil {
 		t.Fatalf("deduplicated write: %v", err)

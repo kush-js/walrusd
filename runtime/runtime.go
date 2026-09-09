@@ -12,7 +12,6 @@ import (
 	"walrus/lease"
 	"walrus/litestream"
 	"walrus/observability"
-	"walrus/storage"
 	"walrus/walruserr"
 )
 
@@ -52,9 +51,12 @@ type Runtime struct {
 	mu  sync.Mutex
 	dbs map[string]*litestream.Database // database key -> registered VFS
 }
+
 // New validates configuration (spec §16: reject settings that release a
-// lease without a confirmed flush) and builds the runtime.
-func New(store storage.ConditionalStore, owner string, cfg Config) (*Runtime, error) {
+// lease without a confirmed flush) and builds the runtime. Leases live in
+// store (Redis/Valkey for shared deployments, memory for dev/tests);
+// object storage needs no conditional-write support.
+func New(store lease.Store, owner string, cfg Config) (*Runtime, error) {
 	if !cfg.RequireFlushBeforeRelease {
 		return nil, walruserr.New(walruserr.ClassConfigurationInvalid,
 			"require_flush_before_release must be true")
@@ -179,6 +181,7 @@ func withEmptyRead(ctx context.Context, fn func(*sql.Conn) error) error {
 	}
 	return fn(conn)
 }
+
 // WriteResult carries the remote TXID observed after a successful write for
 // read-after-write consistency (spec §9).
 type WriteResult struct {

@@ -17,7 +17,7 @@ test("version", () => {
 test("write/flush/read-back on node", async () => {
   const db = new WALrusDatabase({ owner: "node-smoke" });
   const d = {
-    database_id: "users/node_1",
+    database_id: "users/node_1_" + Math.random().toString(36).slice(2),
     storage: { provider: "file", file_root: ROOT },
     credentials: {},
   };

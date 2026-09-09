@@ -9,7 +9,7 @@
 
 Build **WALrus**, a multi-tenant SQLite runtime for Basemnt in which every user has one logical SQLite database and every organization owns the object-storage bucket that persists its databases.
 
-The runtime is embedded directly in each API process. Its core is written in Go because Litestream VFS requires CGO. Go services import the core package directly; Node.js and Bun services use a thin native binding backed by the same Go core. There is no dedicated writer-worker fleet, no Consul, no centralized database router, no sticky sessions, and no worker-to-worker forwarding. Any API instance can handle any request. Before a mutation, its embedded runtime takes a conditional object-storage lease for that user's database, performs the SQLite transaction through Litestream VFS write mode, synchronously flushes the resulting LTX data to object storage, and conditionally releases the lease.
+The runtime is embedded directly in each API process. Its core is written in Go because Litestream VFS requires CGO. Go services import the core package directly; Node.js and Bun services use a thin native binding backed by the same Go core. There is no dedicated writer-worker fleet, no Consul, no centralized database router, no sticky sessions, and no worker-to-worker forwarding. Any API instance can handle any request. Before a mutation, its embedded runtime takes a Redis/Valkey lease for that user's database, performs the SQLite transaction through Litestream VFS write mode, synchronously flushes the resulting LTX data to object storage, and conditionally releases the lease.
 
 The system is deliberately simple:
 
@@ -31,7 +31,7 @@ Load balancer -> any stateless API -> embedded WALrus runtime
 - Basemnt-managed and customer-controlled object storage.
 - Stateless API instances with no affinity requirement.
 - A single Go implementation shared by Go, Node.js, and Bun API services.
-- Conditional object-store leases to serialize writes to one user database.
+- Redis/Valkey leases to serialize writes to one user database.
 - Litestream VFS reads from remote replica data without normal full local hydration.
 - Synchronous remote LTX flush before a successful mutation response or lease release.
 - Bounded, ephemeral API-local cache and temporary write-buffer state.
@@ -93,26 +93,12 @@ storage profile and canonical database ID.
 
 ## 5. Object storage requirements
 
-The storage adapter must provide:
-
-1. Strong read-after-write consistency for objects used by the runtime.
-2. Conditional create-if-absent.
-3. Conditional replace/delete using an opaque object version or ETag.
-4. Atomic evaluation of a condition for one object mutation.
-5. Correct list/read semantics for Litestream's LTX replica path.
-
-The Go adapter exposes the following minimum interface:
-
-```go
-type ConditionalStore interface {
-    Get(ctx context.Context, key string) (body []byte, version string, err error)
-    CreateIfAbsent(ctx context.Context, key string, body []byte) (version string, err error)
-    ReplaceIfVersion(ctx context.Context, key, expectedVersion string, body []byte) (version string, err error)
-    DeleteIfVersion(ctx context.Context, key, expectedVersion string) error
-}
-```
-
-Do not emulate a conditional operation with `GET` followed by unconditional `PUT`. Reject providers that cannot pass the storage conformance suite described below. “S3-compatible” is not sufficient evidence of compatibility.
+Object storage holds only the Litestream replica (LTX chain). It needs
+plain GET/PUT/DELETE plus correct list/read semantics for the replica
+path — no conditional-write support required. Leases live in Redis/Valkey
+(spec §7), so cheap providers without conditional writes (Wasabi,
+Backblaze B2, Sliplane) are acceptable as long as reads observe completed
+PUTs (read-after-write) and listings expose the expected LTX state.
 
 ## 6. Runtime architecture
 
@@ -143,7 +129,8 @@ Do not use the existing Litestream Python/Node loadable extension for this multi
 
 ### 7.1 Lease record
 
-Every database has exactly one lease object at `lease.json`:
+Every database has exactly one lease record, keyed by its lease key
+(`<root_prefix>/<database_id>/lease.json` by default) in Redis/Valkey:
 
 ```json
 {
@@ -165,27 +152,33 @@ Fields:
 - `state`: `held` or `released`.
 - `expires_at`: upper bound on the lease's intended lifetime; used only for crash recovery/takeover.
 
-The storage object's ETag/version is the CAS token. It is not interchangeable with `epoch`.
+The store's fencing token (minted fresh on every successful write) is the
+CAS token. It is not interchangeable with `epoch`. All store mutations are
+single-key atomic (Lua); CAS is never emulated with read-then-write.
+Lease keys carry no TTL: logical expiry governs takeover, and a TTL firing
+early would hand the lease to a successor while the old owner flushes.
+Run Redis/Valkey with persistence (AOF): a restart that wipes keys lets a
+new owner create while a stale holder still believes it owns the lease.
 
 ### 7.2 Acquire
 
 Each logical mutation acquires the lease before any SQLite write begins:
 
-1. `GET lease.json` and capture body + version, or observe `NotFound`.
+1. `GET` the lease key and capture body + fencing token, or observe `NotFound`.
 2. If absent, call `CreateIfAbsent` with `state=held`, a new lease ID, epoch `1`, and a short expiry.
-3. If present and `state=released` or the lease is safely expired, call `ReplaceIfVersion` using the exact retrieved version. Set `state=held`, a new lease ID, `epoch=previous+1`, and a new expiry.
+3. If present and `state=released` or the lease is safely expired, call `ReplaceIfToken` using the exact retrieved token. Set `state=held`, a new lease ID, `epoch=previous+1`, and a new expiry.
 4. If held and unexpired, do not write. Return a retryable busy result or wait using bounded, jittered retry.
-5. On conditional conflict, reread and repeat with backoff. Never overwrite without the retrieved version.
+5. On conditional conflict, reread and repeat with backoff. Never overwrite without the retrieved token.
 
-Lease acquisition must be single-flight inside an API process for the same database ID to avoid local thundering herds. The object-store CAS remains the authority across processes.
+Lease acquisition must be single-flight inside an API process for the same database ID to avoid local thundering herds. The Redis/Valkey CAS remains the authority across processes.
 
 ### 7.3 Release and crash recovery
 
-After a successful remote flush, conditionally replace `lease.json` with `state=released` using the version held by the lease owner. The release keeps the object and its epoch history rather than deleting it.
+After a successful remote flush, conditionally replace the lease record with `state=released` using the fencing token held by the lease owner. The release keeps the record and its epoch history rather than deleting it.
 
 If the API process crashes, it cannot release the lease. A later requester waits until `expires_at`, applies a conservative clock-skew allowance, then takes over with a conditional replace. Lease expiry is not a success condition for the old request; clients whose requests were interrupted must retry with the same idempotency key.
 
-Do not hold an HTTP connection indefinitely while waiting. A contender uses a bounded internal retry budget, then returns `DB_BUSY` with a `Retry-After` hint. There is no fairness queue in an object store.
+Do not hold an HTTP connection indefinitely while waiting. A contender uses a bounded internal retry budget, then returns `DB_BUSY` with a `Retry-After` hint. There is no fairness queue.
 
 ### 7.4 Lease duration
 
@@ -419,16 +412,18 @@ Alert on: any Litestream writer conflict, sustained lease-CAS conflict, a flush 
 - Idempotency transaction semantics.
 - Resource limits and write-buffer cleanup.
 
-### Storage conformance tests
+### Lease-store conformance tests
 
-Run against every provider before it is supported:
+Run against every lease backend before it is supported (`lease/conformance_test.go`):
 
 - concurrent `CreateIfAbsent`: exactly one success;
-- concurrent `ReplaceIfVersion`: exactly one success;
+- concurrent `ReplaceIfToken`: exactly one success;
+- stale tokens never overwrite; tokens rotate on every write;
 - conditional release cannot overwrite a successor lease;
-- post-write reads/listing expose the expected LTX state;
-- ETag/version behavior across overwrite, deletion, versioning, and multipart cases;
 - transient error classification and retry safety.
+
+Object-storage providers need no CAS suite: post-write reads/listing must
+expose the expected LTX state, with read-after-write visibility.
 
 ### Integration tests
 
@@ -485,7 +480,7 @@ Validate at startup that request timeout plus expected flush duration is below l
 1. Go, Node.js, and Bun bindings all use one canonical application-chosen `database_id`.
 2. Object storage is the durable source of the SQLite/LTX replica and lease record.
 3. No API process writes a database without first conditionally acquiring its lease.
-4. Lease acquisition and release always use the object version/ETag returned by the prior read/create.
+4. Lease acquisition and release always use the fencing token returned by the prior read/create.
 5. The lease owner is the only WALrus runtime, regardless of language binding, allowed to enable Litestream VFS write mode for that database.
 6. A mutation is not acknowledged and the lease is not released until the same VFS instance reports successful remote flush.
 7. API instances are stateless; no request/session affinity is required.
@@ -505,7 +500,7 @@ The v1 runtime is complete when:
 - All mutation success responses occur only after confirmed remote LTX upload.
 - A second API instance safely waits/retries and sees the first instance's flushed state after it acquires the next lease.
 - Crash, flush-failure, CAS-conflict, contention, and object-store outage tests pass without acknowledged data loss or duplicate idempotent mutation.
-- Supported object stores pass the conformance suite before customer onboarding.
+- The lease store passes the CAS conformance suite (memory always; Redis/Valkey live) before customer onboarding.
 - Go direct-package, Node.js addon, and Bun addon integration tests run the identical lease/flush test matrix against each supported object store.
 - The Node/Bun addon accepts only batch operations and routes all SQLite/VFS work through the Go core; no JavaScript code can bypass the lease or flush barrier.
 - API-local cache, temporary buffer, cleanup, metrics, alerts, security controls, and runbooks are implemented.

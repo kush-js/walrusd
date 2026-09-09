@@ -6,13 +6,13 @@ this API, read `docs/specs.md` first — every section below cites it.
 
 ## The mental model
 
-- One logical SQLite database per user; object storage (R2/S3) is the
-  durable state, held as Litestream LTX files (spec §2–3).
+- One logical SQLite database per user; cheap object storage (no
+  conditional writes needed) is the durable state, held as Litestream LTX
+  files (spec §2–5). Redis/Valkey holds the write leases (spec §7).
 - Any API instance can serve any request. There is no writer fleet, no
   sticky routing (spec §1).
 - **Reads** see only remote-committed state. No lease is taken (spec §9).
-- **Writes** are serialized per database by a conditional object-storage
-  lease, run inside one SQLite transaction, and are acknowledged only after
+- **Writes** are serialized per database by a Redis/Valkey lease, run inside one SQLite transaction, and are acknowledged only after
   the LTX flush is confirmed. A mutation is durable when the flush is
   confirmed — never on a timer (spec §7–8).
 
@@ -33,8 +33,12 @@ ID (spec §4):
 
 ```
 <root_prefix>/<database_id>/
-  lease.json        # lease record (CAS authority: object ETag)
-  replica/          # Litestream replica (LTX files)
+  replica/          # Litestream replica (LTX files, plain PUTs)
+
+Leases live in Redis/Valkey under the lease key
+`<root_prefix>/<database_id>/lease.json` (fencing token = CAS authority).
+Object storage never sees lease traffic, so providers without conditional
+writes are fine.
 ```
 
 The database ID is yours to choose — `user_1a4b`, `users/u1`,
@@ -67,26 +71,23 @@ package main
 import (
     "context"
 
-    "walrus/litestream"
+    "walrus/lease"
     "walrus/runtime"
-    "walrus/storage"
 )
 
 func main() {
     ctx := context.Background()
-    keyID, secret := "...", "..." // from your control plane / secret store
 
-    // The store is the org bucket. Credentials are org-scoped and
-    // short-lived; rotate them by rebuilding the descriptor per call.
-    store, err := storage.NewS3(ctx, storage.S3Options{
-        Endpoint:        "https://<account>.r2.cloudflarestorage.com",
-        Bucket:          "my-org-bucket",
-        AccessKeyID:     keyID,
-        SecretAccessKey: secret,
+    // Leases live in Redis/Valkey shared by every API instance (one small
+    // instance with persistence/AOF is enough). Memory store is dev-only:
+    // it serializes within this process but not across instances.
+    store, err := lease.NewRedisStore(ctx, lease.RedisOptions{
+        Addr: "127.0.0.1:6379",
     })
     if err != nil {
         panic(err)
     }
+    defer store.Close()
 
     rt, err := runtime.New(store, "api-pod-7", runtime.DefaultConfig())
     if err != nil {
@@ -108,7 +109,7 @@ timeout plus skew allowance; defaults (30s lease, 20s request timeout,
 d := runtime.DatabaseDescriptor{
     DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
     Storage: litestream.Profile{
-        Provider:   "s3",         // "s3" (R2/S3-compatible) or "file"
+        Provider:   "s3",         // "s3" (any S3-compatible) or "file"
         Endpoint:   "https://<account>.r2.cloudflarestorage.com",
         Bucket:     "my-org-bucket",
         RootPrefix: "tenants/acme",
@@ -228,6 +229,9 @@ const db = new WALrusDatabase({
   owner: "api-pod-7",                 // this instance's identity (lease owner)
   requestTimeoutMs: 20_000,
   // writeBufferRootPath: "/tmp/walrus-buffers",  // optional
+  redisAddress: "127.0.0.1:6379",    // required for shared leases;
+  // redisPassword: "...", redisDB: 0,            // optional
+  // (unset = in-process memory leases: dev/single-process only)
 });
 
 const descriptor = {
@@ -317,7 +321,7 @@ defaulted from spec §16):
 ```json
 {
   "owner": "api-pod-7",
-  "config": { "request_timeout_ms": 20000, "write_buffer_root_path": "/tmp/walrus" }
+  "config": { "request_timeout_ms": 20000, "write_buffer_root_path": "/tmp/walrus", "redis_address": "127.0.0.1:6379" }
 }
 ```
 
@@ -337,30 +341,26 @@ and core are from different generations (spec §16 gate).
 
 ---
 
-## Storage provider conformance
+## Lease-store conformance
 
-Before onboarding any object-store provider, run the conditional-write
-conformance suite against it (spec §5, §15). R2 is verified; `file` is the
-local reference implementation:
+Before onboarding any lease backend, run the CAS conformance suite
+(`lease/conformance_test.go`, spec §15). Memory runs always; Redis/Valkey
+runs env-gated (any RESP-compatible server, e.g. Valkey):
 
 ```sh
-# In-memory + file providers run always:
-go test -tags vfs ./storage/
+go test -tags vfs ./lease/
 
-# Live provider (env-gated):
-WALRUS_TEST_S3_ENDPOINT="https://<account>.r2.cloudflarestorage.com" \
-WALRUS_TEST_S3_BUCKET="my-org-bucket" \
-WALRUS_TEST_S3_ACCESS_KEY_ID="..." \
-WALRUS_TEST_S3_SECRET_ACCESS_KEY="..." \
-go test -tags vfs ./storage/ -run TestS3StoreConformance -v
+WALRUS_TEST_REDIS_ADDR="127.0.0.1:6379" \
+go test -tags vfs ./lease/ -run 'TestRedis' -v
 ```
 
 The suite asserts exactly the operations the lease protocol depends on:
-read-after-write byte consistency, create-if-absent, replace-if-version
-(CAS), and delete-if-version. Note: R2 accepts but does not enforce
-`If-Match` on `DeleteObject`; the adapter enforces the guard via an atomic
-CAS-to-tombstone, so `DeleteIfVersion` remains correct on R2 (see
-`storage/s3.go`).
+read-after-write, create-if-absent exclusivity, token-gated replace with
+token rotation, and exactly-one-winner under concurrent create/replace.
+
+Object-storage providers need no CAS suite: reads must observe completed
+PUTs and listings must expose the expected LTX state (`file` is the local
+reference implementation).
 
 ## Configuration reference
 
@@ -391,6 +391,9 @@ background syncs; durability always comes from the disable-path flush.
   retried by clients with their original idempotency keys.
 - Expired-lease takeover is automatic: a crashed writer's lease expires
   after `Duration` (+ skew), then another instance CAS-acquires it.
+- Run Redis/Valkey with persistence (AOF): a restart that wipes lease keys
+  lets a new owner create while a stale holder still believes it owns the
+  lease (spec §7.1).
 - Version gates: match `api_version` (envelope) and `core_version`
   (`walrus_runtime_version`) across rolling deploys; keep a rollback plan
   (spec §16).

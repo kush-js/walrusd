@@ -11,7 +11,6 @@ import (
 	"walrus/lease"
 	"walrus/litestream"
 	"walrus/runtime"
-	"walrus/storage"
 	"walrus/walruserr"
 )
 
@@ -19,7 +18,7 @@ func class(err error) string { return string(walruserr.ClassOf(err)) }
 
 func newTestRuntime(t *testing.T, owner string) *runtime.Runtime {
 	t.Helper()
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	cfg := runtime.DefaultConfig()
 	cfg.Litestream.HydrationEnabled = false
 	rt, err := runtime.New(store, owner, cfg)
@@ -92,7 +91,7 @@ func TestWithWriteSecondWriterWaits(t *testing.T) {
 	// Hold the lease externally to simulate a concurrent writer.
 	db, _ := identity.NewDatabaseID(d.DatabaseID)
 	_ = rt
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	lm := lease.NewManager(store, "api-other", lease.DefaultConfig(), nil)
 	held, err := lm.Acquire(context.Background(), db)
 	if err != nil {

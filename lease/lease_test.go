@@ -10,13 +10,12 @@ import (
 
 	"walrus/identity"
 	"walrus/lease"
-	"walrus/storage"
 	"walrus/walruserr"
 )
 
-func newManager(t *testing.T, mutate func(*lease.Config)) (*lease.Manager, *storage.MemoryStore) {
+func newManager(t *testing.T, mutate func(*lease.Config)) (*lease.Manager, *lease.MemoryStore) {
 	t.Helper()
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	cfg := lease.DefaultConfig()
 	cfg.AcquireRetryBudget = 200 * time.Millisecond
 	if mutate != nil {
@@ -150,7 +149,7 @@ func TestReleaseKeepsObjectAndEpoch(t *testing.T) {
 
 func TestStaleReleaseConflicts(t *testing.T) {
 	// Fresh manager sharing the same store; short lease so takeover is quick.
-	store := storage.NewMemoryStore()
+	store := lease.NewMemoryStore()
 	cfg := lease.DefaultConfig()
 	cfg.AcquireRetryBudget = 300 * time.Millisecond
 	cfg.Duration = 10 * time.Millisecond

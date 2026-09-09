@@ -6,12 +6,13 @@ package c
 import "C"
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 	"unsafe"
 
+	"walrus/lease"
 	"walrus/runtime"
-	"walrus/storage"
 )
 
 // InitRequest configures one runtime instance.
@@ -28,11 +29,18 @@ type runtimeConfig struct {
 	RetryBackoffMinMs    int64  `json:"retry_backoff_min_ms,omitempty"`
 	RetryBackoffMaxMs    int64  `json:"retry_backoff_max_ms,omitempty"`
 	WriteBufferRootPath  string `json:"write_buffer_root_path,omitempty"`
+	// Redis backing for leases (shared deployments). Empty address falls
+	// back to an in-process memory store: fine for dev and single-process
+	// use, but it serializes only within this handle — cross-process
+	// writers need Redis/Valkey with persistence (AOF) enabled.
+	RedisAddr     string `json:"redis_address,omitempty"`
+	RedisPassword string `json:"redis_password,omitempty"`
+	RedisDB       int    `json:"redis_db,omitempty"`
 }
 
-// walrus_runtime_init creates a runtime over an in-process store registry.
-// The store provider is chosen by name ("memory", "s3") with connection
-// details in the request. Returns the handle id as a JSON envelope.
+// walrus_runtime_init creates a runtime over a lease store chosen by config.
+// The store provider is Redis/Valkey when redis_address is set, else an
+// in-process memory store. Returns the handle id as a JSON envelope.
 //
 //export walrus_runtime_init
 func walrus_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
@@ -64,10 +72,17 @@ func walrus_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
 		cfg.Litestream.WriteBufferRootPath = p
 	}
 
-	var store storage.ConditionalStore
-	switch r.Owner {
-	default:
-		store = storage.NewMemoryStore()
+	var store lease.Store = lease.NewMemoryStore()
+	if addr := r.Config.RedisAddr; addr != "" {
+		rs, err := lease.NewRedisStore(context.Background(), lease.RedisOptions{
+			Addr:     addr,
+			Password: r.Config.RedisPassword,
+			DB:       r.Config.RedisDB,
+		})
+		if err != nil {
+			return 0
+		}
+		store = rs
 	}
 
 	adapter, err := NewAdapter(store, r.Owner, cfg)
