@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "node-gyp rebuild -C native && tsc -p .",
-    "test": "bun test ../bun/*.test.ts && node --test smoke.test.mjs"
+    "test": "bun test ../bun/*.test.ts && node --test smoke.test.mjs e2e.test.mjs"
   },
   "gypfile": true,
   "license": "MIT",

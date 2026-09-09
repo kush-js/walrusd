@@ -51,9 +51,14 @@ type Bridge struct {
 	cfg Config
 
 	mu    sync.Mutex
-	seq   atomic.Uint64
 	names map[string]string // database key -> registered vfs name
 }
+
+// globalVFSSeq issues process-wide unique VFS names. One process can host
+// many Bridges (one WALrusDatabase handle each); per-Bridge counters
+// collide on the process-global sqlite3vfs registry and shadow each
+// other's databases.
+var globalVFSSeq atomic.Uint64
 
 // NewBridge builds a VFS bridge.
 func NewBridge(cfg Config) *Bridge {

@@ -60,6 +60,24 @@ func (d *Database) ReadDSN(ctx context.Context, dbName string) string {
 // Key identifies this session's database for the runtime's read-instance
 // cache (spec §10).
 func (s *Session) Key() string { return s.dbVFS.Key }
+// HasLTX reports whether the replica holds any LTX files. A read-mode VFS
+// open on a zero-LTX replica blocks forever in waitForRestorePlan, so
+// callers must probe first and serve the empty-DB fast path instead.
+func (d *Database) HasLTX(ctx context.Context) (bool, error) {
+	client, err := d.Bridge.ReplicaClient(d.Key, d.ReplicaPrefix, d.Profile)
+	if err != nil {
+		return false, fmt.Errorf("litestream: replica client: %w", err)
+	}
+	if err := client.Init(ctx); err != nil {
+		return false, fmt.Errorf("litestream: init replica client: %w", err)
+	}
+	itr, err := client.LTXFiles(ctx, 0, 0, false)
+	if err != nil {
+		return false, fmt.Errorf("litestream: list LTX files: %w", err)
+	}
+	defer itr.Close()
+	return itr.Next(), nil
+}
 
 // OpenWrite opens a read-write session with VFS write mode enabled from the
 // start. Litestream only honors write mode at VFS-open; a read-mode open
@@ -87,7 +105,7 @@ func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, erro
 		}
 		w.inner.WriteBufferPath = d.Bridge.cfg.WriteBufferRootPath + "/buffer-" + sanitize(dbName)
 	}
-	name := fmt.Sprintf("walrus_w%d", d.Bridge.seq.Add(1))
+	name := fmt.Sprintf("walrus_w%d", globalVFSSeq.Add(1))
 	if err := sqlite3vfs.RegisterVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register write vfs: %w", err)
 	}

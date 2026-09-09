@@ -72,7 +72,6 @@ func New(store storage.ConditionalStore, owner string, cfg Config) (*Runtime, er
 	}, nil
 }
 
-// ClockSkew exposes the lease clock-skew allowance for validation.
 func (c Config) ClockSkew() time.Duration { return c.Lease.ClockSkewAllowance }
 
 // database registers (once per process) the VFS for a descriptor.
@@ -88,10 +87,11 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// Key by identity AND storage profile: same database_id against a
-	// different bucket/prefix/endpoint is a different replica. Credentials
-	// are excluded so rotation reuses the VFS; a profile change registers
-	// a new VFS instead of writing through a stale replica client.
-	key := db.String() + "|" + profile.Provider + "|" + profile.Endpoint + "|" + profile.Bucket + "|" + profile.RootPrefix
+	// different bucket/prefix/endpoint/file-root is a different replica.
+	// Credentials are excluded so rotation reuses the VFS; a profile
+	// change registers a new VFS instead of writing through a stale
+	// replica client.
+	key := db.String() + "|" + profile.Provider + "|" + profile.Endpoint + "|" + profile.Region + "|" + profile.Bucket + "|" + profile.RootPrefix + "|" + profile.FileRoot
 	if v, ok := r.dbs[key]; ok {
 		return v, nil
 	}
@@ -140,12 +140,44 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	// but the *sql.Conn is never shared: the old LRU of Sessions handed
 	// one Conn to concurrent callers and closed it under them on
 	// evict/replace. Correctness never depends on caching a Conn.
+	// Empty-DB fast path: a read-mode VFS open on a zero-LTX replica
+	// blocks forever in Litestream's waitForRestorePlan (uncancellable
+	// CGO). Probe first; with no flushed state the database is empty by
+	// definition, so serve fn an empty query-only connection instead.
+	has, err := vfs.HasLTX(ctx)
+	if err != nil {
+		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "probe replica", err)
+	}
+	if !has {
+		return withEmptyRead(ctx, fn)
+	}
 	session, err := vfs.OpenRead(ctx, db.ID)
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open read session", err)
 	}
 	defer session.Close()
 	return fn(session.SQLConn())
+}
+
+// withEmptyRead serves one read against an empty database: no LTX exists,
+// so every table is absent. An in-memory query-only connection gives exact
+// empty-DB SQLite semantics without touching the VFS.
+func withEmptyRead(ctx context.Context, fn func(*sql.Conn) error) error {
+	mem, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open empty read session", err)
+	}
+	defer mem.Close()
+	mem.SetMaxOpenConns(1)
+	conn, err := mem.Conn(ctx)
+	if err != nil {
+		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open empty read session", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA query_only=ON`); err != nil {
+		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open empty read session", err)
+	}
+	return fn(conn)
 }
 // WriteResult carries the remote TXID observed after a successful write for
 // read-after-write consistency (spec §9).

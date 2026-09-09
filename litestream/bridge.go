@@ -86,7 +86,7 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 		}
 		w.inner.WriteBufferPath = b.cfg.WriteBufferRootPath + "/buffer-" + sanitize(dbKey)
 	}
-	name := fmt.Sprintf("walrus_%d", b.seq.Add(1))
+	name := fmt.Sprintf("walrus_%d", globalVFSSeq.Add(1))
 	if err := sqlite3vfs.RegisterVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register vfs %s: %w", name, err)
 	}
