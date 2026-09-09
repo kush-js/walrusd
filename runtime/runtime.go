@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	"walrus/cache"
 	"walrus/identity"
 	"walrus/lease"
 	"walrus/litestream"
@@ -47,16 +47,11 @@ type Runtime struct {
 	cfg     Config
 	bridge  *litestream.Bridge
 	leases  *lease.Manager
-	reads   *cache.Cache
 	metrics *observability.Registry
 
 	mu  sync.Mutex
 	dbs map[string]*litestream.Database // database key -> registered VFS
 }
-
-// Metrics exposes the runtime's privacy-safe counter registry (spec §14).
-func (r *Runtime) Metrics() *observability.Registry { return r.metrics }
-
 // New validates configuration (spec §16: reject settings that release a
 // lease without a confirmed flush) and builds the runtime.
 func New(store storage.ConditionalStore, owner string, cfg Config) (*Runtime, error) {
@@ -72,7 +67,6 @@ func New(store storage.ConditionalStore, owner string, cfg Config) (*Runtime, er
 		cfg:     cfg,
 		bridge:  litestream.NewBridge(cfg.Litestream),
 		leases:  lease.NewManager(store, owner, cfg.Lease, nil),
-		reads:   cache.New(cfg.MaxReadInstances, cfg.ReadInstanceIdleTTL),
 		metrics: observability.NewRegistry(),
 		dbs:     make(map[string]*litestream.Database),
 	}, nil
@@ -93,7 +87,11 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := db.String()
+	// Key by identity AND storage profile: same database_id against a
+	// different bucket/prefix/endpoint is a different replica. Credentials
+	// are excluded so rotation reuses the VFS; a profile change registers
+	// a new VFS instead of writing through a stale replica client.
+	key := db.String() + "|" + profile.Provider + "|" + profile.Endpoint + "|" + profile.Bucket + "|" + profile.RootPrefix
 	if v, ok := r.dbs[key]; ok {
 		return v, nil
 	}
@@ -122,10 +120,6 @@ func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, er
 	return vfs.ReadDSN(ctx, db.ID), nil
 }
 
-// WithRead serves a read against the remote committed replica state
-// (spec §9). No lease is taken; only state Litestream observed remotely is
-// visible. Read sessions are cached per database with LRU + idle-TTL
-// eviction (spec §10); a cache miss simply opens a fresh session.
 func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) error {
 	db, err := d.Identity()
 	if err != nil {
@@ -135,31 +129,24 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	if err != nil {
 		return err
 	}
-	if inst, ok := r.reads.Get(db.String()); ok {
-		if s, ok := inst.(*litestream.Session); ok {
-			if err := fn(s.SQLConn()); err == nil {
-				return nil
-			}
-			// Session may be stale after remote state moved; evict and
-			// fall through to a fresh open (correctness never depends on
-			// the cache).
-			r.reads.Evict(db.String())
-		}
+	// Bound reads even for callers without a deadline. Parent cancellation
+	// still wins: the effective deadline is min(parent, timeout).
+	if r.cfg.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.cfg.RequestTimeout)
+		defer cancel()
 	}
+	// Fresh session per call. The VFS registration is shared via r.dbs,
+	// but the *sql.Conn is never shared: the old LRU of Sessions handed
+	// one Conn to concurrent callers and closed it under them on
+	// evict/replace. Correctness never depends on caching a Conn.
 	session, err := vfs.OpenRead(ctx, db.ID)
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open read session", err)
 	}
-	if err := fn(session.SQLConn()); err != nil {
-		session.Close()
-		return err
-	}
-	// Keep the session for reuse; the cache takes ownership (bounded LRU
-	// with idle-TTL eviction, spec §10).
-	r.reads.Put(session)
-	return nil
+	defer session.Close()
+	return fn(session.SQLConn())
 }
-
 // WriteResult carries the remote TXID observed after a successful write for
 // read-after-write consistency (spec §9).
 type WriteResult struct {
@@ -195,7 +182,13 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		return zero, err
 	}
 	dbKey := db.String()
-
+	// Bound the whole write (acquire+tx+flush+release) even for callers
+	// without a deadline. Parent cancellation still wins.
+	if r.cfg.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.cfg.RequestTimeout)
+		defer cancel()
+	}
 	// 1. Conditionally acquire the lease (spec §7.2).
 	held, err := r.leases.Acquire(ctx, db)
 	if err != nil {
@@ -213,21 +206,34 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		m.LeaseAcquireAttempts++
 		m.LeaseAcquireSucceeded++
 	})
-
 	// From here, the lease must be resolved: released on success, or left
 	// to expire on failure paths that cannot safely release (spec §8).
 	session, err := vfs.OpenWrite(ctx, db.ID)
 	if err != nil {
 		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open write session", err))
 	}
-
+	// Cleanup uses a non-cancelled context so ROLLBACK runs even when the
+	// request deadline fired mid-transaction.
+	cleanupCtx := context.Background()
+	rollback := func() { _, _ = session.Exec(cleanupCtx, `ROLLBACK`) }
+	// 2. Single SQLite transaction for mutation + idempotency record.
+	// Without this, autocommit commits each statement separately and a
+	// crash between the last statement and the idempotency INSERT leaves
+	// the mutation durable-but-unrecorded (retry duplicates). Callbacks
+	// must not manage transactions themselves.
+	if _, err := session.Exec(ctx, `BEGIN IMMEDIATE`); err != nil {
+		session.Close()
+		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "begin write transaction", err))
+	}
 	var result WriteResult
 	// Idempotency check (spec §8): a retry with the same key returns the
 	// prior result instead of repeating the operation.
 	if txid, err := lookupIdempotent(ctx, session.SQLConn(), idempotencyKey); err != nil {
+		rollback()
 		session.Close()
 		return zero, r.failWithLease(ctx, held, err)
 	} else if txid != "" {
+		rollback()
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.IdempotencyDedupeHits++ })
 		session.Close()
 		if err := r.leases.Release(ctx, held); err != nil {
@@ -235,30 +241,48 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		}
 		return WriteResult{TXID: txid, Deduplicated: true}, nil
 	}
-
-	// 2-3. Write mode is enabled by OpenWrite (same connection/VFS instance).
-	// The transaction records the idempotency key inside the same SQLite
-	// transaction as the mutation (spec §8). This session performs exactly
-	// one write transaction followed by one flush, so the flushed TXID is
-	// the last synced TXID plus one — computable in-transaction. If the
-	// flush fails, the recorded value is simply never confirmed; the retry
-	// with the same key either reads it (already committed) or re-runs.
+	// 3. Run the mutation inside the open transaction. Write mode is
+	// enabled by OpenWrite on the same connection/VFS instance. This
+	// session performs exactly one write transaction followed by one
+	// flush, so the flushed TXID is the last synced TXID plus one.
 	if err := fn(session.SQLConn()); err != nil {
+		rollback()
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactionFailures++ })
 		session.Close()
+		if isNestedTxError(err) {
+			return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassInvalidArgument, "write callback must not manage transactions (no BEGIN/COMMIT inside fn)", err))
+		}
 		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "transaction failed", err))
 	}
 	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactions++ })
 	nextTXID, err := session.NextTXID()
 	if err != nil {
+		rollback()
 		session.Close()
 		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "compute next txid", err))
 	}
 	if err := recordIdempotent(ctx, session.SQLConn(), idempotencyKey, nextTXID); err != nil {
+		rollback()
 		session.Close()
 		return zero, r.failWithLease(ctx, held, err)
 	}
-
+	// Lease-expiry guard: if we already ran past expires_at (minus skew),
+	// a successor may own the lease. Flushing now would fork the LTX
+	// chain. Roll back, discard, leave the lease to expire — never flush
+	// or release on a stale token.
+	if r.leaseStale(held) {
+		rollback()
+		session.Close()
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleaseConflicts++ })
+		return zero, walruserr.New(walruserr.ClassLeaseConflict, "lease expired before flush; transaction rolled back, retry with the same idempotency key")
+	}
+	if _, err := session.Exec(ctx, `COMMIT`); err != nil {
+		rollback()
+		session.Close()
+		// COMMIT may have partially reached storage: ambiguous like a
+		// flush failure — never ack, leave lease to expire.
+		return zero, r.flushFailure(ctx, held, walruserr.Wrap(walruserr.ClassFlushFailed, "commit not confirmed", err))
+	}
 	// 4. Disable write mode = the mandatory synchronous flush barrier.
 	flushStart := time.Now()
 	if err := session.DisableWrite(); err != nil {
@@ -279,7 +303,6 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		m.FlushSuccesses++
 		m.FlushDurationMicros += uint64(time.Since(flushStart).Microseconds())
 	})
-
 	txid, txidErr := session.TXID()
 	if txidErr != nil {
 		session.Close()
@@ -291,7 +314,6 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 			fmt.Sprintf("flushed txid %s does not match recorded txid %s", txid, nextTXID))
 	}
 	result.TXID = txid
-
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
 		if walruserr.ClassOf(err) == walruserr.ClassLeaseConflict {
@@ -303,6 +325,27 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleased++ })
 	session.Close()
 	return result, nil
+}
+
+// leaseStale reports whether the held lease already ran past its expiry
+// (minus clock-skew allowance). Flushing or releasing now would risk
+// forking the LTX chain under a successor owner.
+func (r *Runtime) leaseStale(held *lease.Held) bool {
+	if held == nil {
+		return true
+	}
+	return !time.Now().Before(held.Record.ExpiresAt.Add(-r.cfg.Lease.ClockSkewAllowance))
+}
+
+// isNestedTxError detects callbacks that issued their own BEGIN/SAVEPOINT.
+func isNestedTxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "cannot start a transaction within a transaction") ||
+		strings.Contains(s, "already in a transaction") ||
+		strings.Contains(s, "cannot commit - no transaction is active")
 }
 
 // failWithLease discards the write session and releases the lease when no

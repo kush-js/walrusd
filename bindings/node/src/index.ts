@@ -9,9 +9,9 @@ interface NativeAPI {
   load(path: string): void;
   version(): string;
   init(configJson: string): number;
-  write(handle: number, requestJson: string, deadlineMs: number): string;
-  read(handle: number, requestJson: string, deadlineMs: number): string;
-  readDsn(handle: number, requestJson: string, deadlineMs: number): string;
+  write(handle: number, requestJson: string, deadlineMs: number): Promise<string>;
+  read(handle: number, requestJson: string, deadlineMs: number): Promise<string>;
+  readDsn(handle: number, requestJson: string, deadlineMs: number): Promise<string>;
   close(handle: number): string;
 }
 
@@ -186,7 +186,7 @@ export class WALrusDatabase {
       statements: options.statements,
     });
     const deadline = Date.now() + this.defaultDeadlineMs;
-    const res = this.native.write(this.handle, request, deadline);
+    const res = await this.native.write(this.handle, request, deadline);
     return unwrap(res) as WriteResult;
   }
 
@@ -198,10 +198,9 @@ export class WALrusDatabase {
       consistency: options.consistency,
     });
     const deadline = Date.now() + this.defaultDeadlineMs;
-    const res = this.native.read(this.handle, request, deadline);
+    const res = await this.native.read(this.handle, request, deadline);
     return unwrap(res) as ReadResult;
   }
-
   /**
    * readDsn returns a SQLite DSN (file:...?vfs=walrus_N&mode=ro) that the
    * HOST's own SQLite can open to read through litestream VFS natively,
@@ -218,7 +217,7 @@ export class WALrusDatabase {
   async readDsn(options: { database: DatabaseDescriptor }): Promise<{ dsn: string; vfs: string; replica_url?: string }> {
     const request = JSON.stringify({ descriptor: options.database });
     const deadline = Date.now() + this.defaultDeadlineMs;
-    const res = this.native.readDsn(this.handle, request, deadline);
+    const res = await this.native.readDsn(this.handle, request, deadline);
     return unwrap(res) as { dsn: string; vfs: string; replica_url?: string };
   }
 
