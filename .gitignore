@@ -9,3 +9,7 @@ bindings/node/lib/
 bindings/node/dist/
 bindings/node/prebuilds/
 /bindings/vfs/libwalrusd_vfs.so
+site/.astro/
+site/dist/
+site/node_modules/
+site/src/content/docs/

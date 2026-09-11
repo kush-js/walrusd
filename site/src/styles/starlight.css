@@ -1,0 +1,4 @@
+/* Starlight's theme switcher is disabled, so keep the document dark-only. */
+:root {
+  color-scheme: dark;
+}
