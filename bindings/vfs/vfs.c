@@ -1,8 +1,8 @@
 /* WALrus loadable VFS extension: registers per-database litestream read
  * VFSes on demand via walrus_vfs_attach(name, url, key, secret) — a plain
  * SQL-callable function usable from any host SQLite (bun:sqlite, CLI). */
-#include "sqlite3.h"
-#include "sqlite3ext.h"
+#include "binding/sqlite3.h"
+#include "binding/sqlite3ext.h"
 #include <string.h>
 #include <stdlib.h>
 

@@ -124,6 +124,7 @@ func (r *Registry) Total() Metrics {
 		total.ReadCacheHits += m.ReadCacheHits
 		total.ReadCacheEvictions += m.ReadCacheEvictions
 		total.ReadFailures += m.ReadFailures
+		total.ActiveReadInstances += m.ActiveReadInstances
 	}
 	return total
 }

@@ -14,8 +14,11 @@
     "build": "node-gyp rebuild -C native && tsc -p .",
     "test": "bun test ../bun/*.test.ts && node --test smoke.test.mjs e2e.test.mjs"
   },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "node-gyp": "^11.5.0",
+    "typescript": "^7.0.2"
+  },
   "gypfile": true,
-  "license": "MIT",
-  "os": ["darwin"],
-  "cpu": ["arm64"]
+  "license": "MIT"
 }

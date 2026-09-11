@@ -22,12 +22,11 @@ import "C"
 import (
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 
 	litestream "github.com/benbjohnson/litestream"
 	_ "github.com/benbjohnson/litestream/file"
-	_ "github.com/benbjohnson/litestream/s3"
+	"github.com/benbjohnson/litestream/s3"
 	"github.com/psanford/sqlite3vfs"
 )
 
@@ -57,13 +56,16 @@ func WalrusVFSAttach(name, replicaURL, accessKeyID, secretAccessKey *C.char) *C.
 	if err != nil {
 		return C.CString(fmt.Sprintf("walrus_vfs_attach: %v", err))
 	}
-	// litestream's s3 client reads credentials from env when the URL omits them
+	// Configure credentials on this client only; process-global environment
+	// variables would leak one tenant's credentials to every other tenant.
 	if key != "" && secret != "" {
-		os.Setenv("AWS_ACCESS_KEY_ID", key)
-		os.Setenv("AWS_SECRET_ACCESS_KEY", secret)
+		s3Client, ok := client.(*s3.ReplicaClient)
+		if !ok {
+			return C.CString("walrus_vfs_attach: credentials require an s3 replica URL")
+		}
+		s3Client.AccessKeyID = key
+		s3Client.SecretAccessKey = secret
 	}
-	// Credentials for S3 endpoints travel in the replica URL query string
-	// (litestream reads them from the URL); pass through env fallbacks.
 	vfs := litestream.NewVFS(client, noOpLogger())
 	vfs.WriteEnabled = false // read-only: writes go through the WALrus runtime
 	if err := sqlite3vfs.RegisterVFS(n, vfs); err != nil {

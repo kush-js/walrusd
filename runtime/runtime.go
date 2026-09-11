@@ -1,13 +1,16 @@
 package runtime
 
 import (
+	"container/list"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"walrus/cache"
 	"walrus/identity"
 	"walrus/lease"
 	"walrus/litestream"
@@ -46,10 +49,54 @@ type Runtime struct {
 	cfg     Config
 	bridge  *litestream.Bridge
 	leases  *lease.Manager
+	reads   *cache.Cache
 	metrics *observability.Registry
 
-	mu  sync.Mutex
-	dbs map[string]*litestream.Database // database key -> registered VFS
+	mu      sync.Mutex
+	dbs     map[string]*list.Element // database key -> registered VFS
+	dbOrder *list.List               // front = most recently used
+	dbLimit int
+	closed  bool
+}
+
+type databaseEntry struct {
+	key string
+	vfs *litestream.Database
+}
+
+var errReadSessionClosed = errors.New("runtime: cached read session closed")
+
+type cachedReadSession struct {
+	session   *litestream.Session
+	metricsID string
+
+	mu     sync.Mutex
+	closed bool
+}
+
+func newCachedReadSession(s *litestream.Session, metricsID string) *cachedReadSession {
+	return &cachedReadSession{session: s, metricsID: metricsID}
+}
+
+func (s *cachedReadSession) Key() string { return s.session.Key() }
+
+func (s *cachedReadSession) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.session.Close()
+}
+
+func (s *cachedReadSession) run(ctx context.Context, fn func(*sql.Conn) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errReadSessionClosed
+	}
+	return s.session.Run(ctx, fn)
 }
 
 // New validates configuration (spec §16: reject settings that release a
@@ -65,16 +112,61 @@ func New(store lease.Store, owner string, cfg Config) (*Runtime, error) {
 		return nil, walruserr.New(walruserr.ClassConfigurationInvalid,
 			"lease duration must exceed request timeout + flush time + skew allowance")
 	}
-	return &Runtime{
+	lsCfg := cfg.Litestream
+	lsCfg.MaxTempWriteBuffer = cfg.MaxTempWriteBuffer
+	dbLimit := cfg.MaxReadInstances
+	if dbLimit <= 0 {
+		dbLimit = 64
+	}
+	rt := &Runtime{
 		cfg:     cfg,
-		bridge:  litestream.NewBridge(cfg.Litestream),
+		bridge:  litestream.NewBridge(lsCfg),
 		leases:  lease.NewManager(store, owner, cfg.Lease, nil),
+		reads:   cache.New(cfg.MaxReadInstances, cfg.ReadInstanceIdleTTL),
 		metrics: observability.NewRegistry(),
-		dbs:     make(map[string]*litestream.Database),
-	}, nil
+		dbs:     make(map[string]*list.Element),
+		dbOrder: list.New(),
+		dbLimit: dbLimit,
+	}
+	rt.reads.SetObserver(rt.readInstanceAdded, rt.readInstanceRemoved)
+	return rt, nil
 }
 
 func (c Config) ClockSkew() time.Duration { return c.Lease.ClockSkewAllowance }
+
+// MetricsSnapshot returns a copy of the current per-database metrics keyed
+// by the privacy-safe database hash (spec §14).
+func (r *Runtime) MetricsSnapshot() map[uint64]observability.Metrics {
+	return r.metrics.Snapshot()
+}
+
+// MetricsTotal returns the process-wide sum of all current metrics.
+func (r *Runtime) MetricsTotal() observability.Metrics {
+	return r.metrics.Total()
+}
+
+func (r *Runtime) readInstanceAdded(inst cache.ReadInstance) {
+	session, ok := inst.(*cachedReadSession)
+	if !ok {
+		return
+	}
+	r.metrics.Record(session.metricsID, func(m *observability.Metrics) {
+		m.ActiveReadInstances++
+	})
+}
+
+func (r *Runtime) readInstanceRemoved(inst cache.ReadInstance) {
+	session, ok := inst.(*cachedReadSession)
+	if !ok {
+		return
+	}
+	r.metrics.Record(session.metricsID, func(m *observability.Metrics) {
+		if m.ActiveReadInstances > 0 {
+			m.ActiveReadInstances--
+		}
+		m.ReadCacheEvictions++
+	})
+}
 
 // database registers (once per process) the VFS for a descriptor.
 func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*litestream.Database, error) {
@@ -87,22 +179,75 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 	profile.SecretAccessKey = secret
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, walruserr.New(walruserr.ClassRemoteUnavailable, "runtime is closed")
+	}
 	// Key by identity AND storage profile: same database_id against a
 	// different bucket/prefix/endpoint/file-root is a different replica.
 	// Credentials are excluded so rotation reuses the VFS; a profile
 	// change registers a new VFS instead of writing through a stale
 	// replica client.
 	key := db.String() + "|" + profile.Provider + "|" + profile.Endpoint + "|" + profile.Region + "|" + profile.Bucket + "|" + profile.RootPrefix + "|" + profile.FileRoot
-	if v, ok := r.dbs[key]; ok {
+	if el, ok := r.dbs[key]; ok {
+		r.dbOrder.MoveToFront(el)
+		v := el.Value.(*databaseEntry).vfs
+		r.mu.Unlock()
 		return v, nil
 	}
 	vfs, err := r.bridge.RegisterDatabase(key, db.ReplicaPrefix(profile.RootPrefix), profile)
 	if err != nil {
+		r.mu.Unlock()
 		return nil, walruserr.Wrap(walruserr.ClassConfigurationInvalid, "register vfs", err)
 	}
-	r.dbs[key] = vfs
+	el := r.dbOrder.PushFront(&databaseEntry{key: key, vfs: vfs})
+	r.dbs[key] = el
+	var evicted *litestream.Database
+	for len(r.dbs) > r.dbLimit {
+		oldest := r.dbOrder.Back()
+		if oldest == nil {
+			break
+		}
+		entry := oldest.Value.(*databaseEntry)
+		delete(r.dbs, entry.key)
+		r.dbOrder.Remove(oldest)
+		evicted = entry.vfs
+	}
+	r.mu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
 	return vfs, nil
+}
+
+// Close releases cached read sessions and database-owned temporary files.
+func (r *Runtime) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	dbs := make([]*litestream.Database, 0, len(r.dbs))
+	for el := r.dbOrder.Front(); el != nil; el = el.Next() {
+		dbs = append(dbs, el.Value.(*databaseEntry).vfs)
+	}
+	r.dbs = make(map[string]*list.Element)
+	r.dbOrder.Init()
+	r.mu.Unlock()
+
+	var errs []error
+	if r.reads != nil {
+		if err := r.reads.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, db := range dbs {
+		if err := db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ReadDSN registers (once per process) the read VFS for the descriptor's
@@ -122,11 +267,17 @@ func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, er
 	return vfs.ReadDSN(ctx, db.ID), nil
 }
 
-func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) error {
+func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) (err error) {
 	db, err := d.Identity()
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
 	}
+	metricsID := db.String()
+	defer func() {
+		if err != nil {
+			r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadFailures++ })
+		}
+	}()
 	vfs, err := r.database(d, db)
 	if err != nil {
 		return err
@@ -138,10 +289,23 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 		ctx, cancel = context.WithTimeout(ctx, r.cfg.RequestTimeout)
 		defer cancel()
 	}
-	// Fresh session per call. The VFS registration is shared via r.dbs,
-	// but the *sql.Conn is never shared: the old LRU of Sessions handed
-	// one Conn to concurrent callers and closed it under them on
-	// evict/replace. Correctness never depends on caching a Conn.
+	key := vfs.Key
+	if inst, ok := r.reads.Get(key); ok {
+		r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadCacheHits++ })
+		session, ok := inst.(*cachedReadSession)
+		if !ok {
+			r.reads.Evict(key)
+		} else {
+			err := session.run(ctx, fn)
+			if err == nil {
+				return nil
+			}
+			r.reads.Evict(key)
+			if !errors.Is(err, errReadSessionClosed) {
+				return err
+			}
+		}
+	}
 	// Empty-DB fast path: a read-mode VFS open on a zero-LTX replica
 	// blocks forever in Litestream's waitForRestorePlan (uncancellable
 	// CGO). Probe first; with no flushed state the database is empty by
@@ -157,8 +321,14 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open read session", err)
 	}
-	defer session.Close()
-	return fn(session.SQLConn())
+	r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadOpens++ })
+	cached := newCachedReadSession(session, metricsID)
+	if err := cached.run(ctx, fn); err != nil {
+		_ = cached.Close()
+		return err
+	}
+	r.reads.Put(cached)
+	return nil
 }
 
 // withEmptyRead serves one read against an empty database: no LTX exists,
@@ -225,7 +395,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		defer cancel()
 	}
 	// 1. Conditionally acquire the lease (spec §7.2).
-	held, err := r.leases.Acquire(ctx, db)
+	held, err := r.leases.Acquire(ctx, db, d.Storage.RootPrefix)
 	if err != nil {
 		cls := walruserr.ClassOf(err)
 		r.metrics.Record(dbKey, func(m *observability.Metrics) {
@@ -263,24 +433,29 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	var result WriteResult
 	// Idempotency check (spec §8): a retry with the same key returns the
 	// prior result instead of repeating the operation.
-	if txid, err := lookupIdempotent(ctx, session.SQLConn(), idempotencyKey); err != nil {
+	var existingTXID string
+	if err := session.Run(ctx, func(conn *sql.Conn) error {
+		var err error
+		existingTXID, err = lookupIdempotent(ctx, conn, idempotencyKey)
+		return err
+	}); err != nil {
 		rollback()
 		session.Close()
 		return zero, r.failWithLease(ctx, held, err)
-	} else if txid != "" {
+	} else if existingTXID != "" {
 		rollback()
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.IdempotencyDedupeHits++ })
 		session.Close()
 		if err := r.leases.Release(ctx, held); err != nil {
 			return zero, err
 		}
-		return WriteResult{TXID: txid, Deduplicated: true}, nil
+		return WriteResult{TXID: existingTXID, Deduplicated: true}, nil
 	}
 	// 3. Run the mutation inside the open transaction. Write mode is
 	// enabled by OpenWrite on the same connection/VFS instance. This
 	// session performs exactly one write transaction followed by one
 	// flush, so the flushed TXID is the last synced TXID plus one.
-	if err := fn(session.SQLConn()); err != nil {
+	if err := session.Run(ctx, fn); err != nil {
 		rollback()
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactionFailures++ })
 		session.Close()
@@ -296,7 +471,9 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		session.Close()
 		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "compute next txid", err))
 	}
-	if err := recordIdempotent(ctx, session.SQLConn(), idempotencyKey, nextTXID); err != nil {
+	if err := session.Run(ctx, func(conn *sql.Conn) error {
+		return recordIdempotent(ctx, conn, idempotencyKey, nextTXID)
+	}); err != nil {
 		rollback()
 		session.Close()
 		return zero, r.failWithLease(ctx, held, err)
@@ -349,6 +526,9 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 			fmt.Sprintf("flushed txid %s does not match recorded txid %s", txid, nextTXID))
 	}
 	result.TXID = txid
+	// A cached read session may still hold the pre-write index. Drop it so
+	// the next read opens at the flushed remote state.
+	r.reads.Evict(vfs.Key)
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
 		if walruserr.ClassOf(err) == walruserr.ClassLeaseConflict {

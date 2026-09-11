@@ -87,6 +87,10 @@ go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrus.dylib ./bi
 cd bindings/node/native && npx node-gyp rebuild && cd ../../..
 ```
 
+Litestream's VFS is behind the `vfs` build tag, so Go builds, tests, and
+vet runs without `-tags vfs` fail. The package's `test` script invokes Bun,
+so Bun is required to run `npm test`.
+
 Write and read a database:
 
 ```ts

@@ -1,0 +1,222 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CGO_ENABLED: "1"
+      WALRUS_TEST_REDIS_ADDR: 127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Build
+        run: go build -tags vfs ./...
+      - name: Vet
+        run: go vet -tags vfs ./...
+      - name: Test
+        run: go test -tags vfs -count=1 ./...
+      - name: Test with race detector
+        run: go test -tags vfs -race -count=1 ./...
+
+  node:
+    name: Node (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-14
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bindings/node/package-lock.json
+      - name: Build Go shared library
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            lib_ext=dylib
+          else
+            lib_ext=so
+          fi
+          mkdir -p bindings/node/lib
+          go build -buildmode=c-shared -tags vfs \
+            -o "bindings/node/lib/libwalrus.${lib_ext}" ./bindings/c/lib
+      - name: Install Node dependencies
+        working-directory: bindings/node
+        run: npm ci
+      - name: Build Node-API addon
+        working-directory: bindings/node
+        run: npx node-gyp rebuild -C native
+      - name: Build TypeScript
+        working-directory: bindings/node
+        run: npx tsc -p .
+      - name: Test Node bindings
+        working-directory: bindings/node
+        run: node --test smoke.test.mjs e2e.test.mjs
+
+  bun:
+    name: Bun
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bindings/node/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Build Go shared library
+        run: |
+          mkdir -p bindings/node/lib
+          go build -buildmode=c-shared -tags vfs \
+            -o bindings/node/lib/libwalrus.so ./bindings/c/lib
+      - name: Build VFS loadable extension
+        working-directory: bindings/vfs
+        run: |
+          go build -buildmode=c-shared \
+            -tags "vfs SQLITE3VFS_LOADABLE_EXT" \
+            -o libwalrus_vfs.so .
+      - name: Install Node dependencies
+        working-directory: bindings/node
+        run: npm ci
+      - name: Build Node-API addon
+        working-directory: bindings/node
+        run: npx node-gyp rebuild -C native
+      - name: Build TypeScript
+        working-directory: bindings/node
+        run: npx tsc -p .
+      - name: Run Bun conformance suite
+        run: bun test bindings/bun/walrus.test.ts
+        env:
+          WALRUS_TEST_FILE_ROOT: ${{ runner.temp }}/walrus-bun-test
+
+  release-build:
+    name: Release build (${{ matrix.platform }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - go
+      - node
+      - bun
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x64
+            lib_ext: so
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            lib_ext: so
+          - runner: macos-14
+            platform: darwin-arm64
+            lib_ext: dylib
+    runs-on: ${{ matrix.runner }}
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bindings/node/package-lock.json
+      - name: Build Go shared library
+        run: |
+          mkdir -p bindings/node/lib
+          go build -buildmode=c-shared -tags vfs \
+            -o "bindings/node/lib/libwalrus.${{ matrix.lib_ext }}" ./bindings/c/lib
+      - name: Install Node dependencies
+        working-directory: bindings/node
+        run: npm ci
+      - name: Build Node-API addon
+        working-directory: bindings/node
+        run: npx node-gyp rebuild -C native
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          mkdir -p "release/${{ matrix.platform }}"
+          cp bindings/node/native/build/Release/walrus.node \
+            "release/${{ matrix.platform }}/walrus.node"
+          cp "bindings/node/lib/libwalrus.${{ matrix.lib_ext }}" \
+            "release/${{ matrix.platform }}/libwalrus.${{ matrix.lib_ext }}"
+          tar -C release -czf "release/${{ matrix.platform }}.tar.gz" \
+            "${{ matrix.platform }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: walrus-${{ matrix.platform }}
+          path: release/${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: release-artifacts
+        run: sha256sum *.tar.gz > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/*.tar.gz
+            release-artifacts/SHA256SUMS

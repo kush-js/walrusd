@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -139,5 +140,68 @@ func TestWriteAfterReleaseSeesFlushedState(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
+func TestLeaseKeysIncludeRootPrefix(t *testing.T) {
+	const databaseID = "shared/u1"
+
+	store := lease.NewMemoryStore()
+	rt, err := runtime.New(store, "api-1", runtime.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	first := runtime.DatabaseDescriptor{
+		DatabaseID: databaseID,
+		Storage: litestream.Profile{
+			Provider:   "file",
+			RootPrefix: "tenants/acme",
+			FileRoot:   root,
+		},
+		Credentials: runtime.StaticCredentials{AccessKeyID: "k", SecretAccessKey: "s"},
+	}
+	second := runtime.DatabaseDescriptor{
+		DatabaseID: databaseID,
+		Storage: litestream.Profile{
+			Provider:   "file",
+			RootPrefix: "tenants/other",
+			FileRoot:   root,
+		},
+		Credentials: runtime.StaticCredentials{AccessKeyID: "k", SecretAccessKey: "s"},
+	}
+
+	db, err := identity.NewDatabaseID(databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := lease.NewManager(store, "api-other", lease.DefaultConfig(), nil)
+	held, err := manager.Acquire(context.Background(), db, first.Storage.RootPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Release(context.Background(), held)
+
+	if _, err := rt.WithWrite(context.Background(), second, "write", func(*sql.Conn) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("write with different root prefix: %v", err)
+	}
+
+	for _, prefix := range []string{first.Storage.RootPrefix, second.Storage.RootPrefix} {
+		body, _, err := store.Get(context.Background(), db.LeaseKey(prefix))
+		if err != nil {
+			t.Fatalf("read lease under %q: %v", prefix, err)
+		}
+		var rec lease.Record
+		if err := json.Unmarshal(body, &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec.DatabaseID != databaseID {
+			t.Fatalf("database_id under %q = %q, want %q", prefix, rec.DatabaseID, databaseID)
+		}
+	}
+	if _, _, err := store.Get(context.Background(), db.LeaseKey("")); !errors.Is(err, lease.ErrNotFound) {
+		t.Fatalf("unscoped lease key exists: %v", err)
 	}
 }
