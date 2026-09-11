@@ -1,7 +1,16 @@
 {
   "name": "@walrusd/db",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "walrusd embedded SQLite runtime binding for Node.js and Bun",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kush-js/walrusd.git",
+    "directory": "bindings/node"
+  },
+  "homepage": "https://github.com/kush-js/walrusd#readme",
+  "bugs": {
+    "url": "https://github.com/kush-js/walrusd/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
