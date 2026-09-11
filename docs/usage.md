@@ -55,12 +55,13 @@ users** (spec §11).
 
 ### Build
 
-The core requires CGO (Litestream VFS). Always build/test with the `vfs`
-tag:
+The core requires CGO (Litestream VFS is behind the `vfs` build tag).
+Always build, test, and vet with the tag; commands without it fail:
 
 ```sh
 go build -tags vfs ./...
 go test  -tags vfs ./...
+go vet   -tags vfs ./...
 ```
 
 ### Create a runtime
@@ -219,6 +220,9 @@ cd bindings/node/native && npx node-gyp rebuild
 # 3. TypeScript wrapper
 cd bindings/node && npx tsc -p .
 ```
+
+The package's `test` script invokes Bun, so Bun is required to run
+`npm test`.
 
 ### Use
 

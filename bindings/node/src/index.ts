@@ -129,8 +129,14 @@ function loadNative(): NativeAPI {
  *  SQLite (bun native read mode, spec §9). Load with:
  *  db.loadExtension(path, "sqlite3_walrusvfs_init"). */
 export function vfsExtensionPath(): string {
-  const p = join(platformDir(), "libwalrus_vfs.dylib");
-  if (!existsSync(p)) {
+  const filename = process.platform === "darwin" ? "libwalrus_vfs.dylib" : "libwalrus_vfs.so";
+  const candidates = [
+    join(platformDir(), filename),
+    join(__dirname, "..", "lib", filename),
+    join(__dirname, "..", "..", "..", "bindings", "vfs", filename),
+  ];
+  const p = candidates.find(existsSync);
+  if (!p) {
     throw new Error(`@walrus/db: VFS extension not found for ${process.platform}-${process.arch}`);
   }
   return p;

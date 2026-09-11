@@ -2,6 +2,7 @@ package c
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -105,9 +106,10 @@ func (a *Adapter) WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error) {
 
 	d := ddescriptor(r.Descriptor)
 	res, err := a.rt.WithWrite(cctx, d, r.IdempotencyKey, func(conn *sql.Conn) error {
-		for _, st := range r.Statements {
+		for i, st := range r.Statements {
 			if _, err := conn.ExecContext(cctx, st.SQL, st.Params...); err != nil {
-				return fmt.Errorf("statement %q: %w", st.SQL, err)
+				sum := sha256.Sum256([]byte(st.SQL))
+				return fmt.Errorf("statement %d (sql sha256:%x): %w", i, sum[:8], err)
 			}
 		}
 		return nil
@@ -168,7 +170,7 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 }
 
 // Close releases runtime resources.
-func (a *Adapter) Close() error { return nil }
+func (a *Adapter) Close() error { return a.rt.Close() }
 
 // ReadDSNBytes registers the per-database read VFS and returns both the DSN
 // the host's own SQLite can open (e.g. bun:sqlite) and the litestream replica

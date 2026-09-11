@@ -88,13 +88,11 @@ type keyFunc func(d identity.DatabaseID) string
 
 // NewManager builds a lease manager. owner is a unique API-process instance
 // ID used for diagnostics only (spec §7.1). keyFn derives the lease key;
-// nil uses the canonical identity.LeaseKey with an empty root prefix.
+// nil uses the canonical identity.LeaseKey with the root prefix passed to
+// Acquire.
 func NewManager(store Store, owner string, cfg Config, keyFn keyFunc) *Manager {
 	if cfg.Duration == 0 {
 		cfg = DefaultConfig()
-	}
-	if keyFn == nil {
-		keyFn = func(d identity.DatabaseID) string { return d.LeaseKey("") }
 	}
 	return &Manager{
 		store:   store,
@@ -122,8 +120,17 @@ func (h *Held) Epoch() uint64 { return h.Record.Epoch }
 // Acquire acquires the lease for db before any SQLite write begins
 // (spec §7.2). It is single-flight per database ID inside this process and
 // bounded by cfg.AcquireRetryBudget; on timeout it returns ClassBusy.
-func (m *Manager) Acquire(ctx context.Context, db identity.DatabaseID) (*Held, error) {
-	key := m.keys(db)
+func (m *Manager) Acquire(ctx context.Context, db identity.DatabaseID, rootPrefix ...string) (*Held, error) {
+	key := ""
+	if m.keys != nil {
+		key = m.keys(db)
+	} else {
+		prefix := ""
+		if len(rootPrefix) > 0 {
+			prefix = rootPrefix[0]
+		}
+		key = db.LeaseKey(prefix)
+	}
 	return m.acquireSingleFlight(ctx, db, key)
 }
 

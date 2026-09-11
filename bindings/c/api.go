@@ -5,6 +5,7 @@
 package c
 
 /*
+#include <stdint.h>
 #include <stdlib.h>
 
 static void walrus_c_free(void* p) { free(p); }

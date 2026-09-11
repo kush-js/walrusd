@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	ls "github.com/benbjohnson/litestream"
 	_ "github.com/mattn/go-sqlite3" // registers the sqlite3 driver with VFS support
-	"github.com/psanford/sqlite3vfs"
 )
 
 // Session is one request-scoped SQLite connection over a registered VFS.
@@ -29,19 +29,25 @@ type Session struct {
 	mu        sync.Mutex
 	writeFile *ls.VFSFile
 	writeOn   bool
+	closed    bool
 }
+
+var globalSessionSeq atomic.Uint64
 
 // OpenRead opens a read-only session against the remote replica state
 // (spec §9). No local database file is hydrated (invariant 11).
 func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error) {
-	fileName := "walrus_" + sanitize(dbName) + ".db"
+	fileName := fmt.Sprintf("walrus_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=ro&_query_only=1", fileName, d.VFSName)
+	vfsRegistryMu.RLock()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
+		vfsRegistryMu.RUnlock()
 		return nil, fmt.Errorf("litestream: open read: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
+	vfsRegistryMu.RUnlock()
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("litestream: conn: %w", err)
@@ -60,6 +66,7 @@ func (d *Database) ReadDSN(ctx context.Context, dbName string) string {
 // Key identifies this session's database for the runtime's read-instance
 // cache (spec §10).
 func (s *Session) Key() string { return s.dbVFS.Key }
+
 // HasLTX reports whether the replica holds any LTX files. A read-mode VFS
 // open on a zero-LTX replica blocks forever in waitForRestorePlan, so
 // callers must probe first and serve the empty-DB fast path instead.
@@ -85,47 +92,38 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 // database. Call only while holding the database lease (invariant 5);
 // DisableWrite must follow in the same request (spec §8).
 func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, error) {
-	// Dedicated write VFS: write mode on from open, unique per session.
-	client, err := d.Bridge.ReplicaClient(d.Key, d.ReplicaPrefix, d.Profile)
+	// One write VFS per database profile; each transaction gets its own
+	// connection and VFSFile on that shared registration.
+	w, err := d.ensureWriteVFS()
 	if err != nil {
-		return nil, fmt.Errorf("litestream: replica client: %w", err)
+		return nil, err
 	}
-	w := &wrapperVFS{
-		inner: ls.NewVFS(client, noOpLogger()),
-		files: make(map[string]*ls.VFSFile),
-	}
-	w.inner.PollInterval = litestreamPollInterval
-	w.inner.CacheSize = d.Bridge.cfg.VFSPageCacheBytes
-	w.inner.HydrationEnabled = d.Bridge.cfg.HydrationEnabled
-	w.inner.WriteEnabled = true // this VFS exists only under a held lease
-	w.inner.WriteSyncInterval = 0
-	if d.Bridge.cfg.WriteBufferRootPath != "" {
-		if err := ensureTempRoot(d.Bridge.cfg.WriteBufferRootPath); err != nil {
-			return nil, err
-		}
-		w.inner.WriteBufferPath = d.Bridge.cfg.WriteBufferRootPath + "/buffer-" + sanitize(dbName)
-	}
-	name := fmt.Sprintf("walrus_w%d", globalVFSSeq.Add(1))
-	if err := sqlite3vfs.RegisterVFS(name, w); err != nil {
-		return nil, fmt.Errorf("litestream: register write vfs: %w", err)
+	if _, err := w.ensureBufferRoot(); err != nil {
+		return nil, err
 	}
 
-	fileName := "walrus_" + sanitize(dbName) + ".db"
-	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=rw", fileName, name)
+	fileName := fmt.Sprintf("walrus_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
+	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=rw", fileName, d.writeVFSName)
+	vfsRegistryMu.RLock()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
+		vfsRegistryMu.RUnlock()
+		_ = w.discardBuffers()
 		return nil, fmt.Errorf("litestream: open write: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
+	vfsRegistryMu.RUnlock()
 	if err != nil {
 		db.Close()
+		_ = w.discardBuffers()
 		return nil, fmt.Errorf("litestream: conn: %w", err)
 	}
 	s := &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db, writeVFS: w}
 	if err := s.EnableWrite(); err != nil {
 		conn.Close()
 		db.Close()
+		_ = w.discardBuffers()
 		return nil, err
 	}
 	return s, nil
@@ -135,7 +133,9 @@ func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, erro
 // read-after-write).
 func (s *Session) TXID() (string, error) {
 	var txid string
-	if err := s.conn.QueryRowContext(context.Background(), "PRAGMA litestream_txid").Scan(&txid); err != nil {
+	if err := s.Run(context.Background(), func(conn *sql.Conn) error {
+		return conn.QueryRowContext(context.Background(), "PRAGMA litestream_txid").Scan(&txid)
+	}); err != nil {
 		return "", fmt.Errorf("litestream: read txid: %w", err)
 	}
 	return txid, nil
@@ -193,20 +193,51 @@ func (s *Session) DisableWrite() error {
 // lands on the same VFS file (spec §8).
 func (s *Session) SQLConn() *sql.Conn { return s.conn }
 
+// Run executes fn while the process-global VFS registry is stable.
+func (s *Session) Run(ctx context.Context, fn func(*sql.Conn) error) error {
+	s.mu.Lock()
+	conn := s.conn
+	closed := s.closed
+	s.mu.Unlock()
+	if closed || conn == nil {
+		return errors.New("litestream: session is closed")
+	}
+	vfsRegistryMu.RLock()
+	defer vfsRegistryMu.RUnlock()
+	return fn(conn)
+}
+
 // Exec runs a statement on this session's dedicated connection.
 func (s *Session) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.conn.ExecContext(ctx, query, args...)
+	var result sql.Result
+	err := s.Run(ctx, func(conn *sql.Conn) error {
+		var err error
+		result, err = conn.ExecContext(ctx, query, args...)
+		return err
+	})
+	return result, err
 }
 
 // Query runs a query on this session's dedicated connection.
 func (s *Session) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.conn.QueryContext(ctx, query, args...)
+	var rows *sql.Rows
+	err := s.Run(ctx, func(conn *sql.Conn) error {
+		var err error
+		rows, err = conn.QueryContext(ctx, query, args...)
+		return err
+	})
+	return rows, err
 }
 
 // Close closes the session. If write mode is still enabled the caller lost
 // the flush barrier; Close surfaces that as an error after cleanup.
 func (s *Session) Close() error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
 	writeOn := s.writeOn
 	s.writeFile = nil
 	s.mu.Unlock()
@@ -216,20 +247,32 @@ func (s *Session) Close() error {
 		errs = append(errs, errors.New("litestream: session closed with write mode still enabled (flush barrier skipped)"))
 	}
 	if s.conn != nil {
+		vfsRegistryMu.RLock()
 		if err := s.conn.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		vfsRegistryMu.RUnlock()
 		s.conn = nil
 	}
 	if s.db != nil {
+		vfsRegistryMu.RLock()
 		if err := s.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		vfsRegistryMu.RUnlock()
 		s.db = nil
 	}
 	if s.writeVFS != nil {
-		s.writeVFS.discardBuffers()
+		s.writeVFS.forgetFile(s.dbFileName)
+		if err := s.writeVFS.discardBuffers(); err != nil {
+			errs = append(errs, err)
+		}
 		s.writeVFS = nil
+	} else if s.dbVFS != nil {
+		s.dbVFS.wrapper.forgetFile(s.dbFileName)
+		if err := s.dbVFS.wrapper.discardBuffers(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

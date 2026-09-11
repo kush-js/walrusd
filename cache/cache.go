@@ -32,7 +32,8 @@ type Cache struct {
 	now      clock
 	entries  map[string]*list.Element
 	order    *list.List // front = most recently used
-	capacity int        // current size
+	onAdd    func(ReadInstance)
+	onRemove func(ReadInstance)
 }
 
 type entry struct {
@@ -53,6 +54,15 @@ func New(max int, idleTTL time.Duration) *Cache {
 	}
 }
 
+// SetObserver installs callbacks notified after instances are added to or
+// removed from the cache. Callbacks run without the cache lock held.
+func (c *Cache) SetObserver(onAdd, onRemove func(ReadInstance)) {
+	c.mu.Lock()
+	c.onAdd = onAdd
+	c.onRemove = onRemove
+	c.mu.Unlock()
+}
+
 // Get returns the cached instance for key, refreshing its LRU position.
 // The caller must call Release (not Close) when finished using it.
 func (c *Cache) Get(key string) (ReadInstance, bool) {
@@ -60,65 +70,106 @@ func (c *Cache) Get(key string) (ReadInstance, bool) {
 		return nil, false
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	el, ok := c.entries[key]
 	if !ok {
+		c.mu.Unlock()
 		return nil, false
 	}
 	e := el.Value.(*entry)
 	if c.now().Sub(e.lastUsed) > c.idleTTL {
-		c.evictLocked(key, el, e)
+		c.removeLocked(key, el)
+		c.mu.Unlock()
+		_ = e.instance.Close()
+		c.notifyRemove(e.instance)
 		return nil, false
 	}
 	e.lastUsed = c.now()
 	c.order.MoveToFront(el)
+	c.mu.Unlock()
 	return e.instance, true
 }
 
 // Put caches inst for its key, evicting the LRU entry when over capacity.
 // An existing entry for the same key is closed and replaced.
 func (c *Cache) Put(inst ReadInstance) {
-	if c.max <= 0 || c.idleTTL <= 0 || inst == nil {
+	if inst == nil {
+		return
+	}
+	if c.max <= 0 || c.idleTTL <= 0 {
+		_ = inst.Close()
 		return
 	}
 	key := inst.Key()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.entries[key]; ok {
-		c.evictLocked(key, el, el.Value.(*entry))
-	}
-	for len(c.entries) >= c.max {
+
+	for {
+		c.mu.Lock()
+		if el, ok := c.entries[key]; ok {
+			e := el.Value.(*entry)
+			c.removeLocked(key, el)
+			newEl := c.order.PushFront(&entry{key: key, instance: inst, lastUsed: c.now()})
+			c.entries[key] = newEl
+			c.mu.Unlock()
+			_ = e.instance.Close()
+			c.notifyRemove(e.instance)
+			c.notifyAdd(inst)
+			return
+		}
+		if len(c.entries) < c.max {
+			el := c.order.PushFront(&entry{key: key, instance: inst, lastUsed: c.now()})
+			c.entries[key] = el
+			c.mu.Unlock()
+			c.notifyAdd(inst)
+			return
+		}
 		oldest := c.order.Back()
 		if oldest == nil {
-			break
+			c.mu.Unlock()
+			_ = inst.Close()
+			return
 		}
 		e := oldest.Value.(*entry)
-		c.evictLocked(e.key, oldest, e)
+		c.removeLocked(e.key, oldest)
+		c.mu.Unlock()
+		_ = e.instance.Close()
+		c.notifyRemove(e.instance)
 	}
-	el := c.order.PushFront(&entry{key: key, instance: inst, lastUsed: c.now()})
-	c.entries[key] = el
 }
 
 // Evict removes and closes the instance for key if cached.
 func (c *Cache) Evict(key string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.entries[key]; ok {
-		c.evictLocked(key, el, el.Value.(*entry))
+	el, ok := c.entries[key]
+	if !ok {
+		c.mu.Unlock()
+		return
 	}
+	e := el.Value.(*entry)
+	c.removeLocked(key, el)
+	c.mu.Unlock()
+	_ = e.instance.Close()
+	c.notifyRemove(e.instance)
 }
 
 // Close evicts and closes every cached instance.
 func (c *Cache) Close() error {
 	c.mu.Lock()
-	keys := make([]string, 0, len(c.entries))
-	for k := range c.entries {
-		keys = append(keys, k)
+	entries := make([]ReadInstance, 0, len(c.entries))
+	for {
+		el := c.order.Back()
+		if el == nil {
+			break
+		}
+		e := el.Value.(*entry)
+		c.removeLocked(e.key, el)
+		entries = append(entries, e.instance)
 	}
 	c.mu.Unlock()
 	var firstErr error
-	for _, k := range keys {
-		c.Evict(k)
+	for _, inst := range entries {
+		if err := inst.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.notifyRemove(inst)
 	}
 	return firstErr
 }
@@ -130,8 +181,25 @@ func (c *Cache) Len() int {
 	return len(c.entries)
 }
 
-func (c *Cache) evictLocked(key string, el *list.Element, e *entry) {
+func (c *Cache) removeLocked(key string, el *list.Element) {
 	delete(c.entries, key)
 	c.order.Remove(el)
-	_ = e.instance.Close()
+}
+
+func (c *Cache) notifyAdd(inst ReadInstance) {
+	c.mu.Lock()
+	fn := c.onAdd
+	c.mu.Unlock()
+	if fn != nil {
+		fn(inst)
+	}
+}
+
+func (c *Cache) notifyRemove(inst ReadInstance) {
+	c.mu.Lock()
+	fn := c.onRemove
+	c.mu.Unlock()
+	if fn != nil {
+		fn(inst)
+	}
 }

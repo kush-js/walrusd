@@ -13,6 +13,7 @@ import (
 	litestream "github.com/benbjohnson/litestream"
 	"github.com/benbjohnson/litestream/file"
 	"github.com/benbjohnson/litestream/s3"
+	"github.com/psanford/sqlite3vfs"
 )
 
 // Profile is the storage slice of the trusted DatabaseDescriptor (spec §4,
@@ -35,14 +36,16 @@ type Config struct {
 	VFSPageCacheBytes   int
 	HydrationEnabled    bool // must be false in normal operation (invariant 11)
 	WriteBufferRootPath string
+	MaxTempWriteBuffer  int64 // per-process temp write-buffer cap; <= 0 disables
 }
 
 // DefaultConfig returns the starting configuration from spec §16.
 func DefaultConfig() Config {
 	return Config{
-		WriteSyncInterval: 1000,
-		VFSPageCacheBytes: 10 * 1024 * 1024,
-		HydrationEnabled:  false,
+		WriteSyncInterval:  1000,
+		VFSPageCacheBytes:  10 * 1024 * 1024,
+		HydrationEnabled:   false,
+		MaxTempWriteBuffer: 268435456,
 	}
 }
 
@@ -50,8 +53,9 @@ func DefaultConfig() Config {
 type Bridge struct {
 	cfg Config
 
-	mu    sync.Mutex
-	names map[string]string // database key -> registered vfs name
+	mu      sync.Mutex
+	names   map[string]string // database key -> registered vfs name
+	buffers *tempBudget
 }
 
 // globalVFSSeq issues process-wide unique VFS names. One process can host
@@ -60,12 +64,38 @@ type Bridge struct {
 // other's databases.
 var globalVFSSeq atomic.Uint64
 
+// vfsRegistryMu serializes sqlite3vfs.RegisterVFS writes with SQLite VFS
+// callbacks. sqlite3vfs's process-global vfsMap has no mutex of its own.
+var (
+	vfsRegistryMu    sync.RWMutex
+	vfsRegistrations atomic.Uint64
+)
+
+// RegisteredVFSCount reports how many process-global sqlite3vfs instances
+// this package has registered. Registration is intentionally irreversible;
+// the count is used to verify that writes reuse their database VFS.
+func RegisteredVFSCount() uint64 { return vfsRegistrations.Load() }
+
+func registerVFS(name string, v sqlite3vfs.VFS) error {
+	vfsRegistryMu.Lock()
+	defer vfsRegistryMu.Unlock()
+	if err := sqlite3vfs.RegisterVFS(name, v); err != nil {
+		return err
+	}
+	vfsRegistrations.Add(1)
+	return nil
+}
+
 // NewBridge builds a VFS bridge.
 func NewBridge(cfg Config) *Bridge {
 	if cfg.WriteSyncInterval == 0 {
 		cfg = DefaultConfig()
 	}
-	return &Bridge{cfg: cfg, names: make(map[string]string)}
+	return &Bridge{
+		cfg:     cfg,
+		names:   make(map[string]string),
+		buffers: &tempBudget{limit: cfg.MaxTempWriteBuffer},
+	}
 }
 
 // ReplicaClient builds a Litestream replica client rooted at the
