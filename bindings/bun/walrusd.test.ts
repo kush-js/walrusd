@@ -48,6 +48,36 @@ describe("WalrusdDatabase", () => {
     await db.close();
   });
 
+  test("small read/write limits survive eviction and re-registration", async () => {
+    const db = new WalrusdDatabase({
+      owner: `bun-eviction-${Math.random().toString(36).slice(2)}`,
+      maxReadInstances: 2,
+      readInstanceIdleTtlMs: 100,
+      vfsPageCacheBytes: 64 * 1024,
+      writeSyncIntervalMs: 100,
+      maxTempWriteBuffer: 2 * 1024 * 1024,
+    });
+    const ids = Array.from({ length: 5 }, (_, i) => `users/bun-eviction-${Date.now()}-${i}`);
+    for (let i = 0; i < ids.length; i++) {
+      await db.write({
+        database: descriptor(ids[i]),
+        idempotencyKey: `seed-${i}`,
+        statements: [
+          { sql: "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)" },
+          { sql: "INSERT INTO t (v) VALUES (?)", params: [`v${i}`] },
+        ],
+      });
+    }
+    for (let i = 0; i < ids.length; i++) {
+      const { rows } = await db.read({
+        database: descriptor(ids[i]),
+        sql: "SELECT v FROM t LIMIT 1",
+      });
+      expect(rows[0].v).toBe(`v${i}`);
+    }
+    await db.close();
+  });
+
   test("write requires an idempotency key", async () => {
     const db = new WalrusdDatabase({ owner: "bun-test" });
     const d = descriptor("users/user_2");
@@ -145,7 +175,7 @@ test("native read mode through attached VFS", async () => {
   }
 
   const db = new WalrusdDatabase({ owner: "bun-native" });
-  const d = descriptor("users/native_1");
+  const d = descriptor(`users/native_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const res = await db.write({
     database: d,
     idempotencyKey: "nat_" + Math.random().toString(36).slice(2),
@@ -176,7 +206,7 @@ test("native read mode through attached VFS", async () => {
   native.close();
   await db.close();
   expect(rows.length).toBe(1);
-  expect(rows[0].body).toBe("native mode");
+  expect((rows[0] as { body: string }).body).toBe("native mode");
 }, 30_000);
 
 // Live S3 (R2) native read via the attached VFS extension (spec §15).
@@ -228,5 +258,5 @@ test("live R2 native VFS read", async () => {
   native.close();
   await db.close();
   expect(rows.length).toBe(1);
-  expect(rows[0].v).toBe("native-live");
+  expect((rows[0] as { v: string }).v).toBe("native-live");
 }, 60_000);

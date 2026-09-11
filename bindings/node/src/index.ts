@@ -100,6 +100,22 @@ export interface RuntimeOptions {
   /** Total outer retry wall-clock budget in milliseconds. Default: 64000.
    *  Set to 0 to disable automatic write retries. */
   retryMaxTotalMs?: number;
+  /** Maximum number of resident database read instances (an LRU).
+   *  Default: 200. Values at or below 0 use the runtime fallback of 64
+   *  resident databases and disable the read-session cache. */
+  maxReadInstances?: number;
+  /** Idle time in milliseconds before a database's cached read session is
+   *  closed. Default: 60000. Values at or below 0 disable the read-session
+   *  cache entirely. */
+  readInstanceIdleTtlMs?: number;
+  /** Per-database SQLite page cache size in bytes. Default: 10485760 (10 MiB). */
+  vfsPageCacheBytes?: number;
+  /** Background VFS sync interval in milliseconds. Default: 1000. The
+   *  mandatory flush before lease release remains authoritative. */
+  writeSyncIntervalMs?: number;
+  /** Per-process temporary write-buffer cap in bytes. Default: 268435456
+   *  (256 MiB). Values at or below 0 disable the cap. */
+  maxTempWriteBuffer?: number;
   /** Redis/Valkey address (host:port) for shared leases. Unset = in-process
    *  memory leases (dev/single-process only; no cross-process exclusion). */
   redisAddress?: string;
@@ -212,6 +228,11 @@ export class WalrusdDatabase {
           retry_max_delay_ms: options.retryMaxDelayMs,
           retry_max_total_ms: options.retryMaxTotalMs,
           write_buffer_root_path: options.writeBufferRootPath,
+          max_read_instances: options.maxReadInstances,
+          read_instance_idle_ttl_ms: options.readInstanceIdleTtlMs,
+          vfs_page_cache_bytes: options.vfsPageCacheBytes,
+          write_sync_interval_ms: options.writeSyncIntervalMs,
+          max_temp_write_buffer: options.maxTempWriteBuffer,
           redis_address: options.redisAddress,
           redis_password: options.redisPassword,
           redis_db: options.redisDB,

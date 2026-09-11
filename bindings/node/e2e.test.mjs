@@ -44,6 +44,39 @@ describe("write/read contract", () => {
     await db.close();
   });
 
+  test("small read/write limits survive eviction and re-registration", async () => {
+    const db = new WalrusdDatabase({
+      owner: `eviction-${Math.random().toString(36).slice(2)}`,
+      maxReadInstances: 2,
+      readInstanceIdleTtlMs: 100,
+      vfsPageCacheBytes: 64 * 1024,
+      writeSyncIntervalMs: 100,
+      maxTempWriteBuffer: 2 * 1024 * 1024,
+    });
+    const ids = Array.from({ length: 5 }, () => uniq("users/eviction"));
+    try {
+      for (let i = 0; i < ids.length; i++) {
+        await db.write({
+          database: d(ids[i]),
+          idempotencyKey: uniq(`seed${i}`),
+          statements: [
+            { sql: "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)" },
+            { sql: "INSERT INTO t (v) VALUES (?)", params: [`v${i}`] },
+          ],
+        });
+      }
+      for (let i = 0; i < ids.length; i++) {
+        const { rows } = await db.read({
+          database: d(ids[i]),
+          sql: "SELECT v FROM t LIMIT 1",
+        });
+        assert.equal(rows[0].v, `v${i}`);
+      }
+    } finally {
+      await db.close();
+    }
+  });
+
   test("write requires an idempotency key", async () => {
     const db = freshDB();
     await assert.rejects(

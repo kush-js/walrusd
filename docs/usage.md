@@ -135,8 +135,22 @@ err := rt.WithRead(ctx, d, func(conn *sql.Conn) error {
 
 You get a real `*sql.Conn` speaking SQLite through the Litestream VFS. No
 lease is acquired; the connection observes only flushed remote state
-(spec §9). Read instances are cached per database in-process (bounded by
-`MaxReadInstances`, idle-evicted after `ReadInstanceIdleTTL`).
+(spec §9). Reads are served lazily page-by-page from object storage through
+the per-database `VFSPageCacheBytes` page cache. The whole database is never
+downloaded, and Litestream hydration is disabled.
+
+Resident database VFS entries are bounded by `MaxReadInstances` using LRU
+eviction. Read sessions are separately cached up to the same limit and are
+closed after `ReadInstanceIdleTTL` idle time. A non-positive
+`ReadInstanceIdleTTL` disables the read-session cache entirely. A
+non-positive `MaxReadInstances` makes the resident-database LRU fall back to
+64 entries and also disables the read-session cache.
+
+Eviction is safe: durable state remains in object storage, and the next
+access re-opens the database and re-fetches pages on demand. The approximate
+read-path memory ceiling is `MaxReadInstances * VFSPageCacheBytes`, plus the
+resident VFS and replica-client overhead per database. At the defaults, 200
+fully warm 10 MiB caches can use about 2 GiB.
 
 ### Write
 
@@ -356,6 +370,11 @@ defaulted from spec §16):
     "retry_max_delay_ms": 64000,
     "retry_max_total_ms": 64000,
     "write_buffer_root_path": "/tmp/walrusd",
+    "max_read_instances": 200,
+    "read_instance_idle_ttl_ms": 60000,
+    "vfs_page_cache_bytes": 10485760,
+    "write_sync_interval_ms": 1000,
+    "max_temp_write_buffer": 268435456,
     "redis_address": "127.0.0.1:6379"
   }
 }
@@ -366,6 +385,17 @@ defaulted from spec §16):
 lease-acquisition loop; the `retry_fixed_*`, `retry_multiplier`,
 `retry_max_delay_ms`, and `retry_max_total_ms` fields configure the outer
 whole-operation retry policy.
+
+`max_read_instances` bounds the resident database LRU and read-session
+cache. A value at or below 0 uses the runtime fallback of 64 resident
+databases and disables the read-session cache. `read_instance_idle_ttl_ms`
+closes an idle read session; a value at or below 0 disables the read-session
+cache entirely. `vfs_page_cache_bytes` is the per-database page-cache size
+in bytes. `write_sync_interval_ms` is the background VFS sync interval
+forwarded to Litestream configuration; the synchronous flush before lease
+release remains the durability barrier. `max_temp_write_buffer` caps
+per-process temporary write-buffer bytes, and a value at or below 0 disables
+the cap.
 
 `write` request:
 
@@ -420,14 +450,23 @@ Go `runtime.Config` (defaults from spec §16):
 | `RetryPolicy.Multiplier` | 2 | Exponential delay multiplier |
 | `RetryPolicy.MaxDelay` | 64s | Maximum single outer retry delay |
 | `RetryPolicy.MaxTotal` | 64s | Whole outer retry wall-clock budget; `0` disables retries |
-| `ReadInstanceIdleTTL` | 60s | Read-connection cache eviction |
-| `MaxReadInstances` | 200 | Bounded per-process cache |
-| `MaxTempWriteBuffer` | 256 MiB | Per-process write-buffer cap |
+| `ReadInstanceIdleTTL` | 60s | Close an idle read session; `<=0` disables the read-session cache |
+| `MaxReadInstances` | 200 | Resident-database LRU and read-session cache bound; `<=0` falls back to 64 resident databases and disables the read-session cache |
+| `Litestream.VFSPageCacheBytes` | 10 MiB | Per-database SQLite page cache |
+| `Litestream.WriteSyncInterval` | 1s | Background VFS sync interval; the synchronous flush before lease release remains authoritative |
+| `MaxTempWriteBuffer` | 256 MiB | Per-process write-buffer cap; `<=0` disables the cap |
 | `RequireFlushBeforeRelease` | `true` | **Must stay true**; runtime rejects `false` |
 
-Litestream (`cfg.Litestream`): `WriteSyncInterval` (1s) only bounds
-background syncs; durability always comes from the disable-path flush.
+Reads fetch only the pages SQLite requests and cache them up to
+`VFSPageCacheBytes` per resident database. Litestream's hydrator, which
+would materialize a local database file, is compiled in but disabled:
 `HydrationEnabled` must stay `false` in normal operation (invariant 11).
+The approximate read-path memory ceiling is
+`MaxReadInstances * VFSPageCacheBytes`, plus resident VFS and replica-client
+overhead per database. At the defaults, 200 fully warm 10 MiB caches can use
+about 2 GiB. LRU eviction drops the database's VFS, page cache, and replica
+client; data remains durable in object storage and the next access re-opens
+and re-fetches pages on demand.
 
 ## Operational checklist (spec §17–18)
 
