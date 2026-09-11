@@ -212,7 +212,7 @@ lease or the flush barrier.
 
 ```sh
 # 1. Go shared library
-go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrusd.dylib ./bindings/c/lib
+go build -buildmode=c-shared -tags vfs -trimpath -ldflags="-s -w" -o bindings/node/lib/libwalrusd.dylib ./bindings/c/lib
 
 # 2. Native addon
 cd bindings/node/native && npx node-gyp rebuild
@@ -300,7 +300,7 @@ Six exports, data-oriented: JSON envelopes in, JSON envelopes out, no raw
 SQLite pointers ever cross the boundary (spec §11). Build the library:
 
 ```sh
-go build -buildmode=c-shared -tags vfs -o libwalrusd.dylib ./bindings/c/lib
+go build -buildmode=c-shared -tags vfs -trimpath -ldflags="-s -w" -o libwalrusd.dylib ./bindings/c/lib
 ```
 
 ```c

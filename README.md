@@ -123,7 +123,7 @@ Build the native pieces once:
 
 ```sh
 # Go core as a shared library (requires Go with CGO)
-go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrusd.dylib ./bindings/c/lib
+go build -buildmode=c-shared -tags vfs -trimpath -ldflags="-s -w" -o bindings/node/lib/libwalrusd.dylib ./bindings/c/lib
 
 # Node-API addon (requires node + node-gyp)
 cd bindings/node/native && npx node-gyp rebuild && cd ../../..

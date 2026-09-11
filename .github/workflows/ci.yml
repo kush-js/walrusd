@@ -95,6 +95,7 @@ jobs:
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
+            -trimpath -ldflags="-s -w" \
             -o bindings/node/lib/libwalrusd.so ./bindings/c/lib
       - name: Install Node dependencies
         working-directory: bindings/node
@@ -157,12 +158,14 @@ jobs:
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
+            -trimpath -ldflags="-s -w" \
             -o bindings/node/lib/libwalrusd.so ./bindings/c/lib
       - name: Build VFS loadable extension
         working-directory: bindings/vfs
         run: |
           go build -buildmode=c-shared \
             -tags "vfs SQLITE3VFS_LOADABLE_EXT" \
+            -trimpath -ldflags="-s -w" \
             -o libwalrusd_vfs.so .
       - name: Install Node dependencies
         working-directory: bindings/node
@@ -224,6 +227,7 @@ jobs:
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
+            -trimpath -ldflags="-s -w" \
             -o bindings/node/lib/libwalrusd.so ./bindings/c/lib
       - name: Install Node dependencies
         working-directory: bindings/node
