@@ -1,6 +1,6 @@
 {
   "name": "@walrusd/db",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "walrusd embedded SQLite runtime binding for Node.js and Bun",
   "repository": {
     "type": "git",

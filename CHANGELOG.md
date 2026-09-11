@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Exposed five previously Go-only runtime tuning knobs through the C ABI and JS bindings: `max_read_instances` (200), `read_instance_idle_ttl_ms` (60000), `vfs_page_cache_bytes` (10485760), `write_sync_interval_ms` (1000), and `max_temp_write_buffer` (268435456). JS consumers previously could not tune these options.
+- `max_read_instances` bounds resident databases, while `vfs_page_cache_bytes` applies per database, giving an approximate read-path memory ceiling of `max_read_instances * vfs_page_cache_bytes` (~2 GiB at the defaults). Reads are served lazily page-by-page from object storage; no whole-database download is performed, and Litestream hydration stays disabled.
+- Pointer-typed option parsing preserves an explicit `0`: `max_read_instances=0` falls back to 64 resident databases and disables the read-session cache, while `read_instance_idle_ttl_ms=0` disables the read-session cache entirely.
+- Rebuilt the Node README as a complete options reference with units, verified defaults, a tuning/limits section, and the error classes.
+
 ## 0.3.1
 
 - Fixed the process-global sqlite3vfs registry leak: registrations had no unregister path, so each eviction and re-access added a permanent registration. In testing, live registrations grew by one per distinct database per cycle, from 300 to 1800 over six cycles without plateauing, and tenants exceeding `MaxReadInstances` leaked per request until OOM.
