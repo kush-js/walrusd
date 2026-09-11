@@ -7,6 +7,7 @@ const siteDir = path.resolve(scriptDir, "..");
 const repoDir = path.resolve(siteDir, "..");
 const sourceDir = path.join(repoDir, "docs");
 const outputDir = path.join(siteDir, "src", "content", "docs");
+const docsOutputDir = path.join(outputDir, "docs");
 const packagePath = path.join(repoDir, "bindings", "node", "package.json");
 
 const preferredOrder = ["usage.md", "specs.md"];
@@ -123,21 +124,29 @@ function renderDocument(document) {
   ].join("\n");
 }
 
-function renderLanding(description) {
+function escapeMarkdownText(value) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/([\[\]])/g, "\\$1");
+}
+
+function renderDocsHub(description, documents) {
+  const documentLinks = documents.map(
+    (document) =>
+      `- [${escapeMarkdownText(document.title)}](${base}docs/${document.slug}/) - ${escapeMarkdownText(document.description)}`,
+  );
+
   return [
     "---",
-    'title: "walrusd"',
-    "template: splash",
-    `tagline: ${JSON.stringify(description)}`,
-    "hero:",
-    "  actions:",
-    "    - text: Usage Guide",
-    `      link: ${JSON.stringify(`${base}usage/`)}`,
-    "      variant: primary",
-    "    - text: Specification",
-    `      link: ${JSON.stringify(`${base}specs/`)}`,
-    "      variant: secondary",
+    'title: "walrusd documentation"',
+    `description: ${JSON.stringify(description)}`,
     "---",
+    "",
+    "Browse the guides and design documentation for walrusd.",
+    "",
+    "## Documents",
+    "",
+    ...documentLinks,
     "",
   ].join("\n");
 }
@@ -161,26 +170,28 @@ async function syncDocs() {
   const orderedFiles = [...preferred, ...remaining];
 
   await fs.rm(outputDir, { recursive: true, force: true });
-  await fs.mkdir(outputDir, { recursive: true });
+  await fs.mkdir(docsOutputDir, { recursive: true });
 
+  const documents = [];
   for (const source of orderedFiles) {
     const markdown = await fs.readFile(path.join(sourceDir, source), "utf8");
     const document = parseDocument(source, markdown);
+    documents.push(document);
     await fs.writeFile(
-      path.join(outputDir, `${document.slug}.md`),
+      path.join(docsOutputDir, `${document.slug}.md`),
       renderDocument(document),
       "utf8",
     );
   }
 
   await fs.writeFile(
-    path.join(outputDir, "index.md"),
-    renderLanding(packageJson.description),
+    path.join(docsOutputDir, "index.md"),
+    renderDocsHub(packageJson.description, documents),
     "utf8",
   );
 
   console.log(
-    `[sync-docs] generated ${orderedFiles.length} document(s) and index.md`,
+    `[sync-docs] generated ${orderedFiles.length} document(s) and docs/index.md`,
   );
 }
 

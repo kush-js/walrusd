@@ -1,0 +1,823 @@
+---
+import { Code } from "@astrojs/starlight/components";
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+import { landingCopy } from "../data/landing";
+---
+
+<StarlightPage
+  frontmatter={{
+    title: landingCopy.meta.title,
+    description: landingCopy.meta.description,
+    template: "splash",
+  }}
+  hasSidebar={false}
+>
+  <script is:inline>
+    if (
+      "IntersectionObserver" in window &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      document.documentElement.classList.add("landing-reveal-ready");
+    }
+  </script>
+
+  <div class="landing">
+    <section class="hero">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="section-inner hero-inner">
+        <p class="eyebrow">{landingCopy.hero.eyebrow}</p>
+        <h1>{landingCopy.hero.title}</h1>
+        <p class="hero-expansion">{landingCopy.hero.expansion}</p>
+        <p class="hero-description">{landingCopy.hero.description}</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href={landingCopy.hero.primaryAction.href}>
+            {landingCopy.hero.primaryAction.label}
+            <span aria-hidden="true">-&gt;</span>
+          </a>
+          <a
+            class="button button-secondary"
+            href={landingCopy.hero.secondaryAction.href}
+            rel="noreferrer"
+          >
+            {landingCopy.hero.secondaryAction.label}
+          </a>
+        </div>
+        <ul class="hero-facts" aria-label={landingCopy.hero.factsLabel}>
+          {landingCopy.hero.facts.map((fact) => <li>{fact}</li>)}
+        </ul>
+      </div>
+    </section>
+
+    <section class="section section-shell">
+      <div class="section-inner">
+        <header class="section-heading reveal">
+          <p class="eyebrow">{landingCopy.architecture.eyebrow}</p>
+          <h2>{landingCopy.architecture.title}</h2>
+          <p>{landingCopy.architecture.intro}</p>
+        </header>
+
+        <ol class="architecture-flow reveal">
+          {
+            landingCopy.architecture.stages.map((stage, index) => (
+              <li class="flow-stage" style={`--stage-index: ${index}`}>
+                <span class="flow-number">{stage.number}</span>
+                <h3>{stage.title}</h3>
+                <p>{stage.body}</p>
+                {index < landingCopy.architecture.stages.length - 1 && (
+                  <span class="flow-pulse" aria-hidden="true"></span>
+                )}
+              </li>
+            ))
+          }
+        </ol>
+      </div>
+    </section>
+
+    <section class="section section-shell section-raised">
+      <div class="section-inner">
+        <header class="section-heading reveal">
+          <p class="eyebrow">{landingCopy.writePath.eyebrow}</p>
+          <h2>{landingCopy.writePath.title}</h2>
+          <p>{landingCopy.writePath.intro}</p>
+        </header>
+
+        <ol class="write-path">
+          {
+            landingCopy.writePath.steps.map((step, index) => (
+              <li class="write-step reveal" style={`--step-index: ${index}`}>
+                <span class="write-step-number">{step.number}</span>
+                <div>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                </div>
+              </li>
+            ))
+          }
+        </ol>
+
+        <div class="behavior-grid">
+          <article class="behavior behavior-ack reveal">
+            <p class="eyebrow">{landingCopy.writePath.ack.label}</p>
+            <h3>{landingCopy.writePath.ack.title}</h3>
+            <p>{landingCopy.writePath.ack.body}</p>
+          </article>
+          <article class="behavior reveal">
+            <p class="eyebrow">{landingCopy.writePath.read.label}</p>
+            <h3>{landingCopy.writePath.read.title}</h3>
+            <p>{landingCopy.writePath.read.body}</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-shell">
+      <div class="section-inner">
+        <header class="section-heading reveal">
+          <p class="eyebrow">{landingCopy.capabilities.eyebrow}</p>
+          <h2>{landingCopy.capabilities.title}</h2>
+          <p>{landingCopy.capabilities.intro}</p>
+        </header>
+
+        <div class="capability-grid">
+          {
+            landingCopy.capabilities.cards.map((card) => (
+              <article class="capability-card reveal">
+                <p class="card-kicker">{card.kicker}</p>
+                <h3>{card.title}</h3>
+                <p>{card.body}</p>
+              </article>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-shell section-raised">
+      <div class="section-inner quickstart-layout">
+        <header class="section-heading reveal">
+          <p class="eyebrow">{landingCopy.quickstart.eyebrow}</p>
+          <h2>{landingCopy.quickstart.title}</h2>
+          <p>{landingCopy.quickstart.intro}</p>
+        </header>
+        <div class="code-panel reveal">
+          <div class="code-panel-bar">
+            <span class="code-panel-dot" aria-hidden="true"></span>
+            <span>{landingCopy.quickstart.filename}</span>
+          </div>
+          <Code code={landingCopy.quickstart.code} lang="ts" />
+        </div>
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="section-inner closing-inner reveal">
+        <div>
+          <p class="eyebrow">{landingCopy.closing.eyebrow}</p>
+          <h2>{landingCopy.closing.title}</h2>
+          <p>{landingCopy.closing.body}</p>
+        </div>
+        <a class="button button-primary" href={landingCopy.closing.action.href}>
+          {landingCopy.closing.action.label}
+          <span aria-hidden="true">-&gt;</span>
+        </a>
+      </div>
+    </section>
+  </div>
+
+  <script is:inline>
+    (() => {
+      if (!document.documentElement.classList.contains("landing-reveal-ready")) return;
+
+      const items = Array.from(document.querySelectorAll(".landing .reveal"));
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            entry.target.classList.add("is-visible");
+            observer.unobserve(entry.target);
+          }
+        },
+        { rootMargin: "0px 0px -8% 0px", threshold: 0.12 }
+      );
+
+      for (const item of items) observer.observe(item);
+    })();
+  </script>
+</StarlightPage>
+
+<style>
+  :global(body:has(.landing) .main-frame) {
+    padding-inline-start: 0;
+  }
+
+  :global(body:has(.landing) main) {
+    padding: 0;
+  }
+
+  :global(body:has(.landing) main > .content-panel) {
+    padding: 0;
+    border-top: 0;
+  }
+
+  :global(body:has(.landing) main > .content-panel > .sl-container) {
+    max-width: none;
+    margin-inline: 0;
+  }
+
+  :global(body:has(.landing) main > .content-panel:first-child) {
+    display: none;
+  }
+
+  .landing {
+    min-height: 100vh;
+    overflow: hidden;
+    color: var(--sl-color-text);
+    background:
+      linear-gradient(180deg, rgba(6, 15, 28, 0.6), transparent 24rem),
+      var(--sl-color-bg);
+  }
+
+  .section-inner {
+    width: min(100% - 2rem, 70rem);
+    margin-inline: auto;
+  }
+
+  .hero {
+    position: relative;
+    isolation: isolate;
+    min-height: min(48rem, calc(100vh - var(--sl-nav-height)));
+    display: grid;
+    align-items: center;
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+
+  .hero::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    opacity: 0.24;
+    background-image:
+      linear-gradient(rgba(125, 211, 252, 0.14) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(125, 211, 252, 0.14) 1px, transparent 1px);
+    background-size: 4rem 4rem;
+    mask-image: linear-gradient(to bottom, black, transparent 88%);
+  }
+
+  .hero-glow {
+    position: absolute;
+    inset: -20% -12% 12%;
+    z-index: -2;
+    opacity: 0.86;
+    background:
+      radial-gradient(circle at 28% 36%, rgba(34, 211, 238, 0.22), transparent 38%),
+      radial-gradient(circle at 76% 42%, rgba(96, 165, 250, 0.2), transparent 40%),
+      radial-gradient(circle at 52% 12%, rgba(74, 222, 128, 0.12), transparent 26%);
+    filter: saturate(118%);
+    transform: translate3d(-2%, -1%, 0) scale(1.06);
+    animation: hero-glow 10s ease-in-out infinite alternate;
+  }
+
+  .hero-inner {
+    padding-block: clamp(5rem, 12vw, 9rem);
+  }
+
+  .eyebrow {
+    margin: 0 0 0.9rem;
+    color: var(--sl-color-accent-high);
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .hero h1 {
+    max-width: 10ch;
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: 8rem;
+    font-weight: 700;
+    line-height: 0.9;
+    letter-spacing: 0;
+  }
+
+  .hero-expansion {
+    max-width: 34rem;
+    margin: 1.1rem 0 0;
+    color: var(--sl-color-gray-1);
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .hero-description {
+    max-width: 43rem;
+    margin: 1.4rem 0 0;
+    color: var(--sl-color-gray-2);
+    font-size: 1.15rem;
+    line-height: 1.7;
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    margin-top: 2rem;
+  }
+
+  .button {
+    display: inline-flex;
+    min-height: 3rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    padding: 0.75rem 1.1rem;
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-decoration: none;
+    transition: transform 180ms ease;
+  }
+
+  .button:hover {
+    transform: translateY(-2px);
+  }
+
+  .button-primary {
+    color: #04111d;
+    background: linear-gradient(135deg, #67e8f9, #86efac);
+    box-shadow: 0 0.75rem 2rem rgba(34, 211, 238, 0.18);
+  }
+
+  .button-primary:hover {
+    color: #020a12;
+    background: linear-gradient(135deg, #a5f3fc, #bbf7d0);
+  }
+
+  .button-secondary {
+    border-color: var(--sl-color-gray-5);
+    color: var(--sl-color-white);
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .button-secondary:hover {
+    border-color: var(--sl-color-gray-4);
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  .hero-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin: 2.2rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .hero-facts li {
+    padding: 0.4rem 0.68rem;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 999px;
+    color: var(--sl-color-gray-2);
+    background: rgba(15, 23, 42, 0.56);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+  }
+
+  .section {
+    position: relative;
+    padding-block: clamp(5rem, 10vw, 8rem);
+  }
+
+  .section-shell {
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+
+  .section-raised {
+    background:
+      linear-gradient(180deg, rgba(15, 23, 42, 0.62), rgba(10, 15, 24, 0.38)),
+      var(--sl-color-bg);
+  }
+
+  .section-heading {
+    max-width: 48rem;
+  }
+
+  .section-heading h2,
+  .closing h2 {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: 3.25rem;
+    font-weight: 650;
+    line-height: 1.08;
+    letter-spacing: 0;
+  }
+
+  .section-heading > p:last-child,
+  .closing p:not(.eyebrow) {
+    margin: 1rem 0 0;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-lg);
+    line-height: 1.75;
+  }
+
+  .architecture-flow {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin: 3rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .flow-stage {
+    position: relative;
+    min-height: 13.5rem;
+    padding: 1.2rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    background:
+      linear-gradient(180deg, rgba(30, 41, 59, 0.62), rgba(15, 23, 42, 0.62)),
+      var(--sl-color-bg);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
+  }
+
+  .flow-stage:first-child {
+    border-color: rgba(103, 232, 249, 0.45);
+  }
+
+  .flow-stage:last-child {
+    border-color: rgba(134, 239, 172, 0.42);
+  }
+
+  .flow-number,
+  .write-step-number,
+  .card-kicker {
+    display: block;
+    color: var(--sl-color-accent-high);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+  }
+
+  .flow-stage h3 {
+    margin: 2.2rem 0 0.6rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-lg);
+    line-height: 1.25;
+  }
+
+  .flow-stage p {
+    margin: 0;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+    line-height: 1.62;
+  }
+
+  .flow-pulse {
+    position: absolute;
+    z-index: 2;
+    top: 1.62rem;
+    right: -0.55rem;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: #67e8f9;
+    box-shadow: 0 0 1.2rem rgba(103, 232, 249, 0.9);
+    opacity: 0;
+    animation: flow-pulse 3.2s ease-in-out infinite;
+    animation-delay: calc(var(--stage-index) * 0.2s);
+  }
+
+  .flow-pulse::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: calc(100% + 0.1rem);
+    width: 0.65rem;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #67e8f9);
+  }
+
+  .write-path {
+    display: grid;
+    gap: 0.75rem;
+    margin: 3rem 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: write-step;
+  }
+
+  .write-step {
+    display: grid;
+    grid-template-columns: 5rem minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+    padding: 1.25rem 1.35rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    background: rgba(15, 23, 42, 0.46);
+  }
+
+  .write-step-number {
+    display: inline-flex;
+    width: 3rem;
+    height: 3rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(103, 232, 249, 0.35);
+    border-radius: 50%;
+    color: #a5f3fc;
+    background: rgba(8, 47, 73, 0.42);
+  }
+
+  .write-step h3 {
+    margin: 0.15rem 0 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+  }
+
+  .write-step p,
+  .capability-card p,
+  .behavior p {
+    margin: 0.55rem 0 0;
+    color: var(--sl-color-gray-2);
+    line-height: 1.68;
+  }
+
+  .behavior-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+
+  .behavior {
+    padding: 1.5rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    background: rgba(2, 6, 23, 0.46);
+  }
+
+  .behavior-ack {
+    border-color: rgba(134, 239, 172, 0.35);
+    background:
+      linear-gradient(135deg, rgba(20, 83, 45, 0.28), rgba(15, 23, 42, 0.52)),
+      var(--sl-color-bg);
+  }
+
+  .behavior h3 {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-2xl);
+    line-height: 1.28;
+  }
+
+  .capability-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+    margin-top: 3rem;
+  }
+
+  .capability-card {
+    min-height: 14rem;
+    padding: 1.4rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    background:
+      linear-gradient(180deg, rgba(30, 41, 59, 0.5), rgba(15, 23, 42, 0.56)),
+      var(--sl-color-bg);
+    transition: transform 180ms ease;
+  }
+
+  .capability-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(103, 232, 249, 0.42);
+  }
+
+  .capability-card h3 {
+    margin: 2rem 0 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+    line-height: 1.3;
+  }
+
+  .quickstart-layout {
+    display: grid;
+    grid-template-columns: minmax(16rem, 0.72fr) minmax(0, 1.28fr);
+    gap: clamp(2rem, 6vw, 5rem);
+    align-items: start;
+  }
+
+  .code-panel {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    background: #0b1120;
+    box-shadow: var(--sl-shadow-lg);
+  }
+
+  .code-panel-bar {
+    display: flex;
+    min-height: 2.5rem;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0 0.9rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    color: var(--sl-color-gray-3);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+  }
+
+  .code-panel-dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: #86efac;
+    box-shadow: 0 0 0.8rem rgba(134, 239, 172, 0.5);
+  }
+
+  .code-panel :global(.expressive-code) {
+    margin: 0;
+  }
+
+  .code-panel :global(.expressive-code figure) {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .code-panel :global(.expressive-code pre) {
+    max-height: 44rem;
+    overflow: auto;
+  }
+
+  .closing {
+    padding-block: clamp(4rem, 9vw, 7rem);
+    background:
+      linear-gradient(110deg, rgba(8, 47, 73, 0.62), rgba(20, 83, 45, 0.42)),
+      var(--sl-color-bg);
+  }
+
+  .closing-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 2rem;
+  }
+
+  .closing-inner > div {
+    max-width: 48rem;
+  }
+
+  :global(html.landing-reveal-ready) .reveal {
+    opacity: 0;
+    transform: translate3d(0, 1.1rem, 0);
+    transition:
+      opacity 520ms ease,
+      transform 520ms ease;
+    transition-delay: calc(var(--step-index, 0) * 55ms);
+    will-change: opacity, transform;
+  }
+
+  :global(html.landing-reveal-ready) .reveal.is-visible {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    will-change: auto;
+  }
+
+  :global(html.landing-reveal-ready) .capability-card:nth-child(3n + 2) {
+    transition-delay: 70ms;
+  }
+
+  :global(html.landing-reveal-ready) .capability-card:nth-child(3n) {
+    transition-delay: 140ms;
+  }
+
+  :global(html.landing-reveal-ready) .flow-pulse,
+  .hero-glow {
+    animation-play-state: running;
+  }
+
+  @keyframes hero-glow {
+    0% {
+      opacity: 0.68;
+      transform: translate3d(-2.5%, -1.5%, 0) scale(1.04);
+    }
+    100% {
+      opacity: 1;
+      transform: translate3d(2.5%, 1.5%, 0) scale(1.12);
+    }
+  }
+
+  @keyframes flow-pulse {
+    0%,
+    18% {
+      opacity: 0;
+      transform: translate3d(-0.7rem, 0, 0);
+    }
+    35%,
+    70% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(0.7rem, 0, 0);
+    }
+  }
+
+  @media (max-width: 64rem) {
+    .hero h1 {
+      font-size: 6.5rem;
+    }
+
+    .section-heading h2,
+    .closing h2 {
+      font-size: 2.75rem;
+    }
+
+    .architecture-flow {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .flow-stage {
+      min-height: 12rem;
+    }
+
+    .flow-pulse {
+      display: none;
+    }
+
+    .capability-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .quickstart-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 44rem) {
+    .section-inner {
+      width: min(100% - 1.25rem, 70rem);
+    }
+
+    .hero {
+      min-height: auto;
+    }
+
+    .hero h1 {
+      font-size: 4.5rem;
+    }
+
+    .hero-expansion {
+      font-size: 1.35rem;
+    }
+
+    .section-heading h2,
+    .closing h2 {
+      font-size: 2.15rem;
+    }
+
+    .hero::after {
+      background-size: 3rem 3rem;
+    }
+
+    .hero-actions,
+    .closing-inner {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .button {
+      width: 100%;
+    }
+
+    .architecture-flow,
+    .capability-grid,
+    .behavior-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .flow-stage,
+    .capability-card {
+      min-height: 0;
+    }
+
+    .write-step {
+      grid-template-columns: 1fr;
+      gap: 0.8rem;
+    }
+
+    .write-step-number {
+      width: 2.6rem;
+      height: 2.6rem;
+    }
+
+    .closing-inner {
+      display: flex;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .landing *,
+    .landing *::before,
+    .landing *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+
+    .button:hover,
+    .capability-card:hover {
+      transform: none;
+    }
+
+    :global(html.landing-reveal-ready) .reveal {
+      opacity: 1;
+      transform: none;
+    }
+  }
+</style>

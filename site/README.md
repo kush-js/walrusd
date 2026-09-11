@@ -2,7 +2,8 @@
 
 This Astro Starlight site renders the repository's `docs/*.md` files as a
 static, dark-only documentation site. It has no runtime API or server
-dependency.
+dependency. The root route is a custom landing page; documentation lives
+under `/docs/`.
 
 ## Local development
 
@@ -20,9 +21,9 @@ npm run dev
 ```
 
 `predev` runs `scripts/sync-docs.mjs`, which generates `../docs/*.md` into the
-ignored `src/content/docs/` directory, moves each document's H1 into Starlight
-frontmatter, adds a source edit URL, and creates a landing page from the Node
-binding package description.
+ignored `src/content/docs/docs/` directory, moves each document's H1 into
+Starlight frontmatter, adds a source edit URL, and creates the `/docs/` hub
+from the parsed document titles and descriptions.
 
 ## Build
 
@@ -90,12 +91,12 @@ to `const darkOnly = false;`.
 
 ## Adding a page
 
-Add a Markdown file to the repository-level `docs/` directory. It appears
-automatically on the next `npm run dev` or `npm run build`. Every document
-must start with an H1 heading. The first paragraph after that H1 becomes the
-page description.
+Add a Markdown file to the repository-level `docs/` directory. It appears at
+`/docs/<filename>/` on the next `npm run dev` or `npm run build` and is listed
+on the `/docs/` hub. Every document must start with an H1 heading. The first
+paragraph after that H1 becomes the page description.
 
-The sidebar currently lists `usage.md` and `specs.md` explicitly in Starlight
-configuration. Additional documents are generated and build successfully, but
-must be added to the `sidebar` array in `astro.config.mjs` to appear in the
-sidebar.
+The sidebar currently lists the overview, `usage.md`, and `specs.md` explicitly
+in Starlight configuration. Additional documents are generated and build
+successfully, but must be added to the `sidebar` array in `astro.config.mjs`
+to appear in the sidebar.

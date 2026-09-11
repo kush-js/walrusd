@@ -28,8 +28,9 @@ export default defineConfig({
         },
       ],
       sidebar: [
-        { label: "Usage Guide", slug: "usage" },
-        { label: "Specification", slug: "specs" },
+        { label: "Overview", slug: "docs" },
+        { label: "Usage Guide", slug: "docs/usage" },
+        { label: "Specification", slug: "docs/specs" },
       ],
       expressiveCode: {
         themes: ["github-dark"],
