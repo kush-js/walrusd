@@ -62,8 +62,10 @@ type Runtime struct {
 }
 
 type databaseEntry struct {
-	key string
-	vfs *litestream.Database
+	key     string
+	vfs     *litestream.Database
+	refs    int
+	evicted bool
 }
 
 var errReadSessionClosed = errors.New("runtime: cached read session closed")
@@ -171,7 +173,7 @@ func (r *Runtime) readInstanceRemoved(inst cache.ReadInstance) {
 }
 
 // database registers (once per process) the VFS for a descriptor.
-func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*litestream.Database, error) {
+func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*databaseEntry, error) {
 	keyID, secret, err := d.Credentials.AccessKey()
 	if err != nil {
 		return nil, walrusderr.Wrap(walrusderr.ClassConfigurationInvalid, "resolve credentials", err)
@@ -193,18 +195,20 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 	key := db.String() + "|" + profile.Provider + "|" + profile.Endpoint + "|" + profile.Region + "|" + profile.Bucket + "|" + profile.RootPrefix + "|" + profile.FileRoot
 	if el, ok := r.dbs[key]; ok {
 		r.dbOrder.MoveToFront(el)
-		v := el.Value.(*databaseEntry).vfs
+		entry := el.Value.(*databaseEntry)
+		entry.refs++
 		r.mu.Unlock()
-		return v, nil
+		return entry, nil
 	}
 	vfs, err := r.bridge.RegisterDatabase(key, db.ReplicaPrefix(profile.RootPrefix), profile)
 	if err != nil {
 		r.mu.Unlock()
 		return nil, walrusderr.Wrap(walrusderr.ClassConfigurationInvalid, "register vfs", err)
 	}
-	el := r.dbOrder.PushFront(&databaseEntry{key: key, vfs: vfs})
+	entry := &databaseEntry{key: key, vfs: vfs, refs: 1}
+	el := r.dbOrder.PushFront(entry)
 	r.dbs[key] = el
-	var evicted *litestream.Database
+	var evicted []*databaseEntry
 	for len(r.dbs) > r.dbLimit {
 		oldest := r.dbOrder.Back()
 		if oldest == nil {
@@ -213,13 +217,42 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 		entry := oldest.Value.(*databaseEntry)
 		delete(r.dbs, entry.key)
 		r.dbOrder.Remove(oldest)
-		evicted = entry.vfs
+		entry.evicted = true
+		if entry.refs == 0 {
+			evicted = append(evicted, entry)
+		}
 	}
 	r.mu.Unlock()
-	if evicted != nil {
-		_ = evicted.Close()
+	for _, entry := range evicted {
+		_ = r.teardownDatabase(entry)
 	}
-	return vfs, nil
+	return entry, nil
+}
+
+// releaseDatabase drops a caller's reference and tears the entry down if it
+// was evicted while the caller was using it.
+func (r *Runtime) releaseDatabase(entry *databaseEntry) {
+	r.mu.Lock()
+	if entry.refs <= 0 {
+		r.mu.Unlock()
+		panic("runtime: database entry released without a reference")
+	}
+	entry.refs--
+	shouldClose := entry.evicted && entry.refs == 0
+	r.mu.Unlock()
+	if shouldClose {
+		_ = r.teardownDatabase(entry)
+	}
+}
+
+// teardownDatabase drains the cached read session before unregistering the
+// VFS names. The session close waits for an in-flight run to finish, which
+// guarantees no connection still owns either VFS.
+func (r *Runtime) teardownDatabase(entry *databaseEntry) error {
+	if r.reads != nil {
+		r.reads.Evict(entry.key)
+	}
+	return entry.vfs.Close()
 }
 
 // Close releases cached read sessions and database-owned temporary files.
@@ -230,9 +263,13 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
-	dbs := make([]*litestream.Database, 0, len(r.dbs))
+	var dbs []*databaseEntry
 	for el := r.dbOrder.Front(); el != nil; el = el.Next() {
-		dbs = append(dbs, el.Value.(*databaseEntry).vfs)
+		entry := el.Value.(*databaseEntry)
+		entry.evicted = true
+		if entry.refs == 0 {
+			dbs = append(dbs, entry)
+		}
 	}
 	r.dbs = make(map[string]*list.Element)
 	r.dbOrder.Init()
@@ -244,8 +281,8 @@ func (r *Runtime) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	for _, db := range dbs {
-		if err := db.Close(); err != nil {
+	for _, entry := range dbs {
+		if err := r.teardownDatabase(entry); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -262,11 +299,12 @@ func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, er
 	if err != nil {
 		return "", walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
-	vfs, err := r.database(d, db)
+	entry, err := r.database(d, db)
 	if err != nil {
 		return "", err
 	}
-	return vfs.ReadDSN(ctx, db.ID), nil
+	defer r.releaseDatabase(entry)
+	return entry.vfs.ReadDSN(ctx, db.ID), nil
 }
 
 func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) (err error) {
@@ -280,10 +318,12 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 			r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadFailures++ })
 		}
 	}()
-	vfs, err := r.database(d, db)
+	entry, err := r.database(d, db)
 	if err != nil {
 		return err
 	}
+	defer r.releaseDatabase(entry)
+	vfs := entry.vfs
 	// Bound reads even for callers without a deadline. Parent cancellation
 	// still wins: the effective deadline is min(parent, timeout).
 	if r.cfg.RequestTimeout > 0 {
@@ -464,10 +504,12 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 
 func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, d DatabaseDescriptor, idempotencyKey string, fn func(*sql.Conn) error) (WriteResult, error) {
 	var zero WriteResult
-	vfs, err := r.database(d, db)
+	entry, err := r.database(d, db)
 	if err != nil {
 		return zero, err
 	}
+	defer r.releaseDatabase(entry)
+	vfs := entry.vfs
 	dbKey := db.String()
 	// 1. Conditionally acquire the lease (spec §7.2).
 	held, err := r.leases.Acquire(ctx, db, d.Storage.RootPrefix)

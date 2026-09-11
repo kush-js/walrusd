@@ -165,9 +165,8 @@ func (d *Database) ensureWriteVFS() (*wrapperVFS, error) {
 	return w, nil
 }
 
-// Close releases process-local files owned by this database VFS. The
-// sqlite3vfs registry has no unregister operation, so the registrations
-// themselves remain process-global.
+// Close releases process-local files and process-global VFS registrations
+// owned by this database.
 func (d *Database) Close() error {
 	var errs []error
 	if d.wrapper != nil {
@@ -177,9 +176,18 @@ func (d *Database) Close() error {
 	}
 	d.writeMu.Lock()
 	w := d.writeWrapper
+	writeVFSName := d.writeVFSName
 	d.writeMu.Unlock()
 	if w != nil {
 		if err := w.discardBuffers(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := unregisterVFS(d.VFSName); err != nil {
+		errs = append(errs, err)
+	}
+	if writeVFSName != "" {
+		if err := unregisterVFS(writeVFSName); err != nil {
 			errs = append(errs, err)
 		}
 	}

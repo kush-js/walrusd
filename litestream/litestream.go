@@ -72,8 +72,7 @@ var (
 )
 
 // RegisteredVFSCount reports how many process-global sqlite3vfs instances
-// this package has registered. Registration is intentionally irreversible;
-// the count is used to verify that writes reuse their database VFS.
+// are currently registered by this package.
 func RegisteredVFSCount() uint64 { return vfsRegistrations.Load() }
 
 func registerVFS(name string, v sqlite3vfs.VFS) error {
