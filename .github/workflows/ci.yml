@@ -32,8 +32,8 @@ jobs:
       GOPROXY: https://proxy.golang.org,direct
       WALRUS_TEST_REDIS_ADDR: 127.0.0.1:6379
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true
@@ -70,12 +70,12 @@ jobs:
       CGO_ENABLED: "1"
       GOPROXY: https://proxy.golang.org,direct
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -117,12 +117,12 @@ jobs:
       CGO_ENABLED: "1"
       GOPROXY: https://proxy.golang.org,direct
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -199,12 +199,12 @@ jobs:
       CGO_ENABLED: "1"
       GOPROXY: https://proxy.golang.org,direct
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -241,7 +241,7 @@ jobs:
             "release/${{ matrix.platform }}/libwalrus.so"
           tar -C release -czf "release/${{ matrix.platform }}.tar.gz" \
             "${{ matrix.platform }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: walrus-${{ matrix.platform }}
           path: release/${{ matrix.platform }}.tar.gz
@@ -256,14 +256,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true
       - name: Write checksums
         working-directory: release-artifacts
         run: sha256sum *.tar.gz > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             release-artifacts/*.tar.gz
