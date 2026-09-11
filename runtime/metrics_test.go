@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"walrus/observability"
+	"walrusd/observability"
 )
 
 func TestMetricsSnapshotAndReadSignals(t *testing.T) {

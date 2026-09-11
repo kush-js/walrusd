@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"walrus/cache"
-	"walrus/identity"
-	"walrus/lease"
-	"walrus/litestream"
-	"walrus/observability"
-	"walrus/walruserr"
+	"walrusd/cache"
+	"walrusd/identity"
+	"walrusd/lease"
+	"walrusd/litestream"
+	"walrusd/observability"
+	"walrusd/walruserr"
 )
 
 // Config is the runtime configuration (spec §16).
@@ -44,7 +44,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// Runtime is the WALrus runtime surface (spec §11).
+// Runtime is the walrusd runtime surface (spec §11).
 type Runtime struct {
 	cfg     Config
 	bridge  *litestream.Bridge

@@ -37,7 +37,7 @@ var globalSessionSeq atomic.Uint64
 // OpenRead opens a read-only session against the remote replica state
 // (spec §9). No local database file is hydrated (invariant 11).
 func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error) {
-	fileName := fmt.Sprintf("walrus_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
+	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=ro&_query_only=1", fileName, d.VFSName)
 	vfsRegistryMu.RLock()
 	db, err := sql.Open("sqlite3", dsn)
@@ -60,7 +60,7 @@ func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error
 // The VFS is registered process-wide by the runtime, so any SQLite in the
 // process (bun:sqlite, custom sqlite builds) can open it natively.
 func (d *Database) ReadDSN(ctx context.Context, dbName string) string {
-	return fmt.Sprintf("file:walrus_%s.db?vfs=%s&mode=ro", sanitize(dbName), d.VFSName)
+	return fmt.Sprintf("file:walrusd_%s.db?vfs=%s&mode=ro", sanitize(dbName), d.VFSName)
 }
 
 // Key identifies this session's database for the runtime's read-instance
@@ -102,7 +102,7 @@ func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, erro
 		return nil, err
 	}
 
-	fileName := fmt.Sprintf("walrus_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
+	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=rw", fileName, d.writeVFSName)
 	vfsRegistryMu.RLock()
 	db, err := sql.Open("sqlite3", dsn)

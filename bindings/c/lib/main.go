@@ -1,10 +1,10 @@
-// Command lib builds the WALrus C shared library:
+// Command lib builds the walrusd C shared library:
 //
-//	go build -buildmode=c-shared -tags vfs -o libwalrus.dylib ./bindings/c/lib
+//	go build -buildmode=c-shared -tags vfs -o libwalrusd.dylib ./bindings/c/lib
 package main
 
 import (
-	_ "walrus/bindings/c"
+	_ "walrusd/bindings/c"
 )
 
 func main() {}

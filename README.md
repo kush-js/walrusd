@@ -1,6 +1,6 @@
-# WALrus
+# walrusd
 
-WALrus ("Write-Ahead Log in object storage") is a horizontally scalable,
+walrusd ("Write-Ahead Log in object storage") is a horizontally scalable,
 multi-tenant SQLite runtime with one logical database per user. Cheap
 object storage (Wasabi, Backblaze B2, Sliplane, or any S3-compatible store
 — no conditional writes needed) is the durable database; Redis/Valkey
@@ -15,25 +15,25 @@ embedded runtime.
 - Reads see only remote-committed state, through Litestream's VFS, with no
   local hydration.
 - Go core (CGO), exposed to Node.js and Bun through one Node-API addon
-  (`@walrus/db`) over a narrow C ABI.
+  (`@walrusd/db`) over a narrow C ABI.
 
 See [docs/specs.md](docs/specs.md) for the design and invariants and
-[docs/usage.md](docs/usage.md) for the full guide (Go core, `@walrus/db`,
+[docs/usage.md](docs/usage.md) for the full guide (Go core, `@walrusd/db`,
 C ABI, error model, provider conformance, configuration).
 
 ## Installing (Node.js / Bun)
 
 ```sh
-npm install @walrus/db
+npm install @walrusd/db
 ```
 
 ```ts
-import { WALrusDatabase } from "@walrus/db";
+import { WalrusdDatabase } from "@walrusd/db";
 
-const db = new WALrusDatabase({ owner: "my-api-instance" });
+const db = new WalrusdDatabase({ owner: "my-api-instance" });
 const database = {
   database_id: "users/user_1",
-  storage: { provider: "file", file_root: "/tmp/walrus-example" },
+  storage: { provider: "file", file_root: "/tmp/walrusd-example" },
   credentials: {},
 };
 
@@ -69,7 +69,7 @@ enabled.
 flowchart LR
     subgraph API["API process (disposable compute)"]
         direction TB
-        JS["Your code\n(Node.js / Bun / Go)"] --> RT["WALrus runtime"]
+        JS["Your code\n(Node.js / Bun / Go)"] --> RT["walrusd runtime"]
         RT --> LF["Litestream VFS (CGO)"]
     end
 
@@ -123,7 +123,7 @@ Build the native pieces once:
 
 ```sh
 # Go core as a shared library (requires Go with CGO)
-go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrus.dylib ./bindings/c/lib
+go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrusd.dylib ./bindings/c/lib
 
 # Node-API addon (requires node + node-gyp)
 cd bindings/node/native && npx node-gyp rebuild && cd ../../..
@@ -136,14 +136,14 @@ so Bun is required to run `npm test`.
 Write and read a database:
 
 ```ts
-import { WALrusDatabase } from "./bindings/node/src/index";
+import { WalrusdDatabase } from "./bindings/node/src/index";
 
-const db = new WALrusDatabase({ owner: "my-api-instance" });
+const db = new WalrusdDatabase({ owner: "my-api-instance" });
 
 // The descriptor is issued by your control plane — never by end users.
 const d = {
   database_id: "users/user_1",   // your ID; objects land at <root_prefix>/users/user_1/
-  storage: { provider: "file", file_root: "/tmp/walrus-quickstart" },
+  storage: { provider: "file", file_root: "/tmp/walrusd-quickstart" },
   credentials: {},
 };
 
@@ -157,7 +157,7 @@ await db.write({
 const { txid } = await db.write({
   database: d,
   idempotencyKey: "set-greeting",   // retrying this key is safe: deduplicated
-  statements: [{ sql: "INSERT OR REPLACE INTO kv (k, v) VALUES ('greeting', 'hello from WALrus')" }],
+  statements: [{ sql: "INSERT OR REPLACE INTO kv (k, v) VALUES ('greeting', 'hello from walrusd')" }],
 });
 console.log("durable at txid", txid);
 
@@ -173,7 +173,7 @@ Run it:
 ```sh
 bun run quickstart.ts
 # durable at txid 0000000000000002
-# read: hello from WALrus
+# read: hello from walrusd
 ```
 
 For production, swap `provider: "file"` for `"s3"` with your bucket
@@ -181,8 +181,8 @@ endpoint and org-scoped credentials, and pass `redisAddress` (plus
 optional `redisPassword`/`redisDB`) so all instances share leases.
 The same code runs unchanged on Node.js.
 An executable conformance suite for Bun lives in
-`bindings/bun/walrus.test.ts` (`bun test bindings/bun/walrus.test.ts` after
-pointing `WALRUS_TEST_FILE_ROOT` at a temp dir).
+`bindings/bun/walrusd.test.ts` (`bun test bindings/bun/walrusd.test.ts` after
+pointing `WALRUSD_TEST_FILE_ROOT` at a temp dir).
 
 ## Repository layout
 
@@ -194,4 +194,4 @@ pointing `WALRUS_TEST_FILE_ROOT` at a temp dir).
 | `runtime/` | `WithRead`/`WithWrite`: lease → transaction → flush → release, idempotency |
 | `walruserr/` | Classified `DB_*` error model |
 | `bindings/c/` | Narrow C ABI over the core (JSON envelopes) |
-| `bindings/node/` | Node-API addon + `@walrus/db` TypeScript wrapper |
+| `bindings/node/` | Node-API addon + `@walrusd/db` TypeScript wrapper |

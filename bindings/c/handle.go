@@ -12,8 +12,8 @@ import (
 	"time"
 	"unsafe"
 
-	"walrus/lease"
-	"walrus/runtime"
+	"walrusd/lease"
+	"walrusd/runtime"
 )
 
 // InitRequest configures one runtime instance.
@@ -39,12 +39,12 @@ type runtimeConfig struct {
 	RedisDB       int    `json:"redis_db,omitempty"`
 }
 
-// walrus_runtime_init creates a runtime over a lease store chosen by config.
+// walrusd_runtime_init creates a runtime over a lease store chosen by config.
 // The store provider is Redis/Valkey when redis_address is set, else an
 // in-process memory store. Returns the handle id as a JSON envelope.
 //
-//export walrus_runtime_init
-func walrus_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
+//export walrusd_runtime_init
+func walrusd_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
 	req := C.GoBytes(unsafe.Pointer(requestBytes), n)
 	var r InitRequest
 	if err := json.Unmarshal(req, &r); err != nil {

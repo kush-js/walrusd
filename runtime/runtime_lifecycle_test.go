@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"walrus/lease"
-	"walrus/litestream"
-	"walrus/runtime"
+	"walrusd/lease"
+	"walrusd/litestream"
+	"walrusd/runtime"
 )
 
 func TestWriteReusesDatabaseVFS(t *testing.T) {

@@ -1,4 +1,4 @@
-module walrus/bindings/vfs
+module walrusd/bindings/vfs
 
 go 1.25.0
 

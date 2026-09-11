@@ -1,4 +1,4 @@
-name: CI
+name: walrusd CI
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
     env:
       CGO_ENABLED: "1"
       GOPROXY: https://proxy.golang.org,direct
-      WALRUS_TEST_REDIS_ADDR: 127.0.0.1:6379
+      WALRUSD_TEST_REDIS_ADDR: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -95,7 +95,7 @@ jobs:
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
-            -o bindings/node/lib/libwalrus.so ./bindings/c/lib
+            -o bindings/node/lib/libwalrusd.so ./bindings/c/lib
       - name: Install Node dependencies
         working-directory: bindings/node
         run: npm ci
@@ -157,13 +157,13 @@ jobs:
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
-            -o bindings/node/lib/libwalrus.so ./bindings/c/lib
+            -o bindings/node/lib/libwalrusd.so ./bindings/c/lib
       - name: Build VFS loadable extension
         working-directory: bindings/vfs
         run: |
           go build -buildmode=c-shared \
             -tags "vfs SQLITE3VFS_LOADABLE_EXT" \
-            -o libwalrus_vfs.so .
+            -o libwalrusd_vfs.so .
       - name: Install Node dependencies
         working-directory: bindings/node
         run: npm ci
@@ -174,9 +174,9 @@ jobs:
         working-directory: bindings/node
         run: npx tsc -p .
       - name: Run Bun conformance suite
-        run: bun test bindings/bun/walrus.test.ts
+        run: bun test bindings/bun/walrusd.test.ts
         env:
-          WALRUS_TEST_FILE_ROOT: ${{ runner.temp }}/walrus-bun-test
+          WALRUSD_TEST_FILE_ROOT: ${{ runner.temp }}/walrusd-bun-test
 
   release-build:
     name: Release build (${{ matrix.platform }})
@@ -224,7 +224,7 @@ jobs:
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
-            -o bindings/node/lib/libwalrus.so ./bindings/c/lib
+            -o bindings/node/lib/libwalrusd.so ./bindings/c/lib
       - name: Install Node dependencies
         working-directory: bindings/node
         run: npm ci
@@ -235,25 +235,25 @@ jobs:
         shell: bash
         run: |
           mkdir -p "release/${{ matrix.platform }}"
-          cp bindings/node/native/build/Release/walrus.node \
-            "release/${{ matrix.platform }}/walrus.node"
-          cp bindings/node/lib/libwalrus.so \
-            "release/${{ matrix.platform }}/libwalrus.so"
+          cp bindings/node/native/build/Release/walrusd.node \
+            "release/${{ matrix.platform }}/walrusd.node"
+          cp bindings/node/lib/libwalrusd.so \
+            "release/${{ matrix.platform }}/libwalrusd.so"
           tar -C release -czf "release/${{ matrix.platform }}.tar.gz" \
             "${{ matrix.platform }}"
       - uses: actions/upload-artifact@v7
         with:
-          name: walrus-${{ matrix.platform }}
+          name: walrusd-${{ matrix.platform }}
           path: release/${{ matrix.platform }}.tar.gz
           if-no-files-found: error
       - name: Package npm prebuild
         shell: bash
         run: |
           mkdir -p "prebuilds/${{ matrix.platform }}"
-          cp bindings/node/native/build/Release/walrus.node \
-            "prebuilds/${{ matrix.platform }}/walrus.node"
-          cp bindings/node/lib/libwalrus.so \
-            "prebuilds/${{ matrix.platform }}/libwalrus.so"
+          cp bindings/node/native/build/Release/walrusd.node \
+            "prebuilds/${{ matrix.platform }}/walrusd.node"
+          cp bindings/node/lib/libwalrusd.so \
+            "prebuilds/${{ matrix.platform }}/libwalrusd.so"
       - uses: actions/upload-artifact@v7
         with:
           name: prebuild-${{ matrix.platform }}

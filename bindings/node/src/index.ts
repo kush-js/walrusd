@@ -1,4 +1,4 @@
-// @walrus/db — WALrus binding for Node.js and Bun (spec §11).
+// @walrusd/db — walrusd binding for Node.js and Bun (spec §11).
 // All SQLite/VFS/lease work happens in the Go core via the C ABI; this
 // wrapper only translates JSON envelopes to typed values and errors.
 
@@ -82,8 +82,8 @@ export interface RuntimeOptions {
   redisPassword?: string;
   redisDB?: number;
 }
-/** Classified WALrus error (spec §11 required errors). */
-export class WALrusError extends Error {
+/** Classified walrusd error (spec §11 required errors). */
+export class WalrusdError extends Error {
   readonly code: string;
   readonly retryAfterMs?: number;
   constructor(code: string, message: string, retryAfterMs?: number) {
@@ -101,25 +101,25 @@ function platformDir(): string {
 function loadNative(): NativeAPI {
   // Prebuilds first (npm package); fall back to in-repo dev builds.
   const candidates = [
-    join(platformDir(), "walrus.node"),
-    join(__dirname, "..", "native", "build", "Release", "walrus.node"),
-    join(__dirname, "..", "..", "..", "bindings", "node", "native", "build", "Release", "walrus.node"),
+    join(platformDir(), "walrusd.node"),
+    join(__dirname, "..", "native", "build", "Release", "walrusd.node"),
+    join(__dirname, "..", "..", "..", "bindings", "node", "native", "build", "Release", "walrusd.node"),
   ];
   const addonPath = candidates.find(existsSync);
   if (!addonPath) {
-    throw new Error("@walrus/db: native addon not built. Run `npm run build`.");
+    throw new Error("@walrusd/db: native addon not built. Run `npm run build`.");
   }
   const native: NativeAPI = require(addonPath);
   // Locate the bundled shared library (Go core).
   const libCandidates = [
-    join(platformDir(), "libwalrus.dylib"),
-    join(platformDir(), "libwalrus.so"),
+    join(platformDir(), "libwalrusd.dylib"),
+    join(platformDir(), "libwalrusd.so"),
     join(__dirname, "..", "lib", findLib(join(__dirname, "..", "lib"))),
-    join(__dirname, "..", "..", "..", "libwalrus.dylib"),
+    join(__dirname, "..", "..", "..", "libwalrusd.dylib"),
   ];
   const libPath = libCandidates.find((p) => p && existsSync(p));
   if (!libPath) {
-    throw new Error("@walrus/db: libwalrus shared library not found");
+    throw new Error("@walrusd/db: libwalrusd shared library not found");
   }
   native.load(libPath);
   return native;
@@ -127,9 +127,9 @@ function loadNative(): NativeAPI {
 
 /** Absolute path to the bundled litestream VFS read extension for the host
  *  SQLite (bun native read mode, spec §9). Load with:
- *  db.loadExtension(path, "sqlite3_walrusvfs_init"). */
+ *  db.loadExtension(path, "sqlite3_walrusdvfs_init"). */
 export function vfsExtensionPath(): string {
-  const filename = process.platform === "darwin" ? "libwalrus_vfs.dylib" : "libwalrus_vfs.so";
+  const filename = process.platform === "darwin" ? "libwalrusd_vfs.dylib" : "libwalrusd_vfs.so";
   const candidates = [
     join(platformDir(), filename),
     join(__dirname, "..", "lib", filename),
@@ -137,7 +137,7 @@ export function vfsExtensionPath(): string {
   ];
   const p = candidates.find(existsSync);
   if (!p) {
-    throw new Error(`@walrus/db: VFS extension not found for ${process.platform}-${process.arch}`);
+    throw new Error(`@walrusd/db: VFS extension not found for ${process.platform}-${process.arch}`);
   }
   return p;
 }
@@ -145,26 +145,26 @@ export function vfsExtensionPath(): string {
 function findLib(dir: string): string {
   if (!existsSync(dir)) return "";
   const files = readdirSync(dir);
-  return files.find((f) => f.startsWith("libwalrus.") && !f.endsWith(".h")) ?? "";
+  return files.find((f) => f.startsWith("libwalrusd.") && !f.endsWith(".h")) ?? "";
 }
 
 function unwrap(res: string): any {
   const env = JSON.parse(res) as Envelope;
   if (env.api_version !== API_VERSION) {
-    throw new WALrusError("DB_PROTOCOL_MISMATCH", `api_version ${env.api_version} != ${API_VERSION}`);
+    throw new WalrusdError("DB_PROTOCOL_MISMATCH", `api_version ${env.api_version} != ${API_VERSION}`);
   }
   if (!env.ok) {
-    throw new WALrusError(env.error!.class, env.error!.message, env.error!.retry_after_ms);
+    throw new WalrusdError(env.error!.class, env.error!.message, env.error!.retry_after_ms);
   }
   return env.result;
 }
 
 /**
- * WALrusDatabase is the batch-oriented interface (spec §11): all statements
+ * WalrusdDatabase is the batch-oriented interface (spec §11): all statements
  * in a write() run in one SQLite transaction under one lease, followed by
  * the mandatory flush-before-release sequence.
  */
-export class WALrusDatabase {
+export class WalrusdDatabase {
   private native: NativeAPI;
   private handle: number;
   private defaultDeadlineMs: number;
@@ -215,13 +215,13 @@ export class WALrusDatabase {
     return unwrap(res) as ReadResult;
   }
   /**
-   * readDsn returns a SQLite DSN (file:...?vfs=walrus_N&mode=ro) that the
+   * readDsn returns a SQLite DSN (file:...?vfs=walrusd_N&mode=ro) that the
    * HOST's own SQLite can open to read through litestream VFS natively,
    * plus the replica URL for the loadable-extension path. On Bun:
    *   1. Database.setCustomSQLite(...) once
    *   2. scratch = new Database(":memory:");
-   *      scratch.loadExtension("<pkg>/prebuilds/libwalrus_vfs", "sqlite3_walrusvfs_init")
-   *      scratch.exec(`SELECT walrus_vfs_attach('<vfs>', '<replica_url>', key, secret)`)
+   *      scratch.loadExtension("<pkg>/prebuilds/libwalrusd_vfs", "sqlite3_walrusdvfs_init")
+   *      scratch.exec(`SELECT walrusd_vfs_attach('<vfs>', '<replica_url>', key, secret)`)
    *      scratch.close()
    *   3. new Database("file:...?vfs=<vfs>&mode=ro")
    * Reads stream LTX pages from object storage; no lease, read-only
@@ -240,4 +240,4 @@ export class WALrusDatabase {
   }
 }
 
-export default WALrusDatabase;
+export default WalrusdDatabase;

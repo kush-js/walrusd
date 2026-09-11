@@ -1,20 +1,20 @@
-# @walrus/db
+# @walrusd/db
 
-Node.js and Bun binding for the WALrus embedded SQLite runtime.
+Node.js and Bun binding for the walrusd embedded SQLite runtime.
 
 ## Installing
 
 ```sh
-npm install @walrus/db
+npm install @walrusd/db
 ```
 
 ```ts
-import { WALrusDatabase } from "@walrus/db";
+import { WalrusdDatabase } from "@walrusd/db";
 
-const db = new WALrusDatabase({ owner: "my-api-instance" });
+const db = new WalrusdDatabase({ owner: "my-api-instance" });
 const database = {
   database_id: "users/user_1",
-  storage: { provider: "file", file_root: "/tmp/walrus-example" },
+  storage: { provider: "file", file_root: "/tmp/walrusd-example" },
   credentials: {},
 };
 
@@ -40,6 +40,6 @@ await db.close();
 ```
 
 The package includes prebuilt native artifacts for `linux-x64` and
-`linux-arm64` under `prebuilds/<platform>-<arch>/`. Both `walrus.node` and
-`libwalrus.so` must be present for the host platform. Unsupported platforms
+`linux-arm64` under `prebuilds/<platform>-<arch>/`. Both `walrusd.node` and
+`libwalrusd.so` must be present for the host platform. Unsupported platforms
 must build from source with Go and CGO enabled.

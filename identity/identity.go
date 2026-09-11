@@ -12,7 +12,7 @@ import (
 
 // DatabaseID is the caller's canonical database identifier: a relative,
 // path-safe object-store key such as "user_1a4b", "users/u1", or
-// "acme/agents/a7". WALrus imposes no structure on it; the object layout is
+// "acme/agents/a7". walrusd imposes no structure on it; the object layout is
 // simply "<root_prefix>/<database_id>/". Databases with different IDs are
 // fully independent (separate lease and replica prefixes), so use distinct
 // ID paths to partition databases however your product needs.

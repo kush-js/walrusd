@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"walrus/identity"
-	"walrus/lease"
+	"walrusd/identity"
+	"walrusd/lease"
 )
 
 func redisStore(t *testing.T) *lease.RedisStore {
 	t.Helper()
-	addr := os.Getenv("WALRUS_TEST_REDIS_ADDR")
+	addr := os.Getenv("WALRUSD_TEST_REDIS_ADDR")
 	if addr == "" {
-		t.Skip("WALRUS_TEST_REDIS_ADDR not set; skipping live Redis test")
+		t.Skip("WALRUSD_TEST_REDIS_ADDR not set; skipping live Redis test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

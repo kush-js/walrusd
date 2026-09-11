@@ -1,7 +1,7 @@
-# WALrus Usage Guide
+# walrusd Usage Guide
 
-How to embed and use the WALrus runtime: the Go core, the Node.js/Bun
-binding (`@walrus/db`), and the C ABI. For the design and invariants behind
+How to embed and use the walrusd runtime: the Go core, the Node.js/Bun
+binding (`@walrusd/db`), and the C ABI. For the design and invariants behind
 this API, read `docs/specs.md` first — every section below cites it.
 
 ## The mental model
@@ -72,8 +72,8 @@ package main
 import (
     "context"
 
-    "walrus/lease"
-    "walrus/runtime"
+    "walrusd/lease"
+    "walrusd/runtime"
 )
 
 func main() {
@@ -201,7 +201,7 @@ that is the whole contract.
 
 ---
 
-## Node.js and Bun (`@walrus/db`)
+## Node.js and Bun (`@walrusd/db`)
 
 One Node-API addon, loaded by Node directly and by Bun through its
 Node-API compatibility layer (spec §11). All SQLite, VFS, lease, and flush
@@ -212,7 +212,7 @@ lease or the flush barrier.
 
 ```sh
 # 1. Go shared library
-go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrus.dylib ./bindings/c/lib
+go build -buildmode=c-shared -tags vfs -o bindings/node/lib/libwalrusd.dylib ./bindings/c/lib
 
 # 2. Native addon
 cd bindings/node/native && npx node-gyp rebuild
@@ -227,12 +227,12 @@ The package's `test` script invokes Bun, so Bun is required to run
 ### Use
 
 ```ts
-import { WALrusDatabase, WALrusError } from "@walrus/db";
+import { WalrusdDatabase, WalrusdError } from "@walrusd/db";
 
-const db = new WALrusDatabase({
+const db = new WalrusdDatabase({
   owner: "api-pod-7",                 // this instance's identity (lease owner)
   requestTimeoutMs: 20_000,
-  // writeBufferRootPath: "/tmp/walrus-buffers",  // optional
+  // writeBufferRootPath: "/tmp/walrusd-buffers",  // optional
   redisAddress: "127.0.0.1:6379",    // required for shared leases;
   // redisPassword: "...", redisDB: 0,            // optional
   // (unset = in-process memory leases: dev/single-process only)
@@ -270,14 +270,14 @@ await db.close();
 
 ### Errors
 
-`WALrusError` carries `code` (the `DB_*` class) and an optional
+`WalrusdError` carries `code` (the `DB_*` class) and an optional
 `retryAfterMs`:
 
 ```ts
 try {
   await db.write({ database: d, idempotencyKey: key, statements });
 } catch (e) {
-  if (e instanceof WALrusError) {
+  if (e instanceof WalrusdError) {
     if (e.code === "DB_FLUSH_FAILED") {
       // retry with the SAME idempotency key — the retry is a no-op if the
       // first attempt actually committed
@@ -288,7 +288,7 @@ try {
 }
 ```
 
-The same code runs unchanged under Bun — `bindings/bun/walrus.test.ts` is
+The same code runs unchanged under Bun — `bindings/bun/walrusd.test.ts` is
 the executable reference (write+flush+read-back, idempotency validation,
 concurrent writers serializing through the lease).
 
@@ -300,16 +300,16 @@ Six exports, data-oriented: JSON envelopes in, JSON envelopes out, no raw
 SQLite pointers ever cross the boundary (spec §11). Build the library:
 
 ```sh
-go build -buildmode=c-shared -tags vfs -o libwalrus.dylib ./bindings/c/lib
+go build -buildmode=c-shared -tags vfs -o libwalrusd.dylib ./bindings/c/lib
 ```
 
 ```c
-const char *walrus_runtime_version(void);
-uint64_t    walrus_runtime_init(const char *req, int n);
-const char *walrus_runtime_write(uint64_t h, const char *req, int n, long long deadline_ms);
-const char *walrus_runtime_read (uint64_t h, const char *req, int n, long long deadline_ms);
-const char *walrus_runtime_close(uint64_t h);
-void        walrus_free(char *p);   // free every returned string
+const char *walrusd_runtime_version(void);
+uint64_t    walrusd_runtime_init(const char *req, int n);
+const char *walrusd_runtime_write(uint64_t h, const char *req, int n, long long deadline_ms);
+const char *walrusd_runtime_read (uint64_t h, const char *req, int n, long long deadline_ms);
+const char *walrusd_runtime_close(uint64_t h);
+void        walrusd_free(char *p);   // free every returned string
 ```
 
 Every response is an envelope:
@@ -325,7 +325,7 @@ defaulted from spec §16):
 ```json
 {
   "owner": "api-pod-7",
-  "config": { "request_timeout_ms": 20000, "write_buffer_root_path": "/tmp/walrus", "redis_address": "127.0.0.1:6379" }
+  "config": { "request_timeout_ms": 20000, "write_buffer_root_path": "/tmp/walrusd", "redis_address": "127.0.0.1:6379" }
 }
 ```
 
@@ -354,7 +354,7 @@ runs env-gated (any RESP-compatible server, e.g. Valkey):
 ```sh
 go test -tags vfs ./lease/
 
-WALRUS_TEST_REDIS_ADDR="127.0.0.1:6379" \
+WALRUSD_TEST_REDIS_ADDR="127.0.0.1:6379" \
 go test -tags vfs ./lease/ -run 'TestRedis' -v
 ```
 
@@ -399,5 +399,5 @@ background syncs; durability always comes from the disable-path flush.
   lets a new owner create while a stale holder still believes it owns the
   lease (spec §7.1).
 - Version gates: match `api_version` (envelope) and `core_version`
-  (`walrus_runtime_version`) across rolling deploys; keep a rollback plan
+  (`walrusd_runtime_version`) across rolling deploys; keep a rollback plan
   (spec §16).

@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// Metrics is the WALrus counter set (spec §14 required signals). All fields
+// Metrics is the walrusd counter set (spec §14 required signals). All fields
 // are monotonically increasing counts except the gauges.
 type Metrics struct {
 	// Lease signals.

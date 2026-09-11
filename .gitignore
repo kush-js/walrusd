@@ -8,4 +8,4 @@ node_modules/
 bindings/node/lib/
 bindings/node/dist/
 bindings/node/prebuilds/
-/bindings/vfs/libwalrus_vfs.so
+/bindings/vfs/libwalrusd_vfs.so

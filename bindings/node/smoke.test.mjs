@@ -1,21 +1,21 @@
-// Node.js (non-Bun) integration smoke for @walrus/db (spec §15: Node support
+// Node.js (non-Bun) integration smoke for @walrusd/db (spec §15: Node support
 // is gated on this suite, not assumed from Bun API compatibility).
 // Run: node --test bindings/node/smoke.test.mjs  (or bun test).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { WALrusDatabase, WALrusError } from "./dist/index.js";
+import { WalrusdDatabase, WalrusdError } from "./dist/index.js";
 import { mkdirSync } from "node:fs";
 
-const ROOT = process.env.WALRUS_TEST_FILE_ROOT ?? "/tmp/walrus-node-test";
+const ROOT = process.env.WALRUSD_TEST_FILE_ROOT ?? "/tmp/walrusd-node-test";
 mkdirSync(ROOT, { recursive: true });
 
 test("version", () => {
-  const v = WALrusDatabase.version();
+  const v = WalrusdDatabase.version();
   assert.equal(v.api_version, 1);
 });
 
 test("write/flush/read-back on node", async () => {
-  const db = new WALrusDatabase({ owner: "node-smoke" });
+  const db = new WalrusdDatabase({ owner: "node-smoke" });
   const d = {
     database_id: "users/node_1_" + Math.random().toString(36).slice(2),
     storage: { provider: "file", file_root: ROOT },
@@ -36,7 +36,7 @@ test("write/flush/read-back on node", async () => {
 });
 
 test("write requires idempotency key", async () => {
-  const db = new WALrusDatabase({ owner: "node-smoke" });
+  const db = new WalrusdDatabase({ owner: "node-smoke" });
   const d = {
     database_id: "users/node_2",
     storage: { provider: "file", file_root: ROOT },
@@ -44,7 +44,7 @@ test("write requires idempotency key", async () => {
   };
   await assert.rejects(
     () => db.write({ database: d, idempotencyKey: "", statements: [{ sql: "SELECT 1" }] }),
-    (e) => e instanceof WALrusError && e.code === "DB_INVALID_ARGUMENT",
+    (e) => e instanceof WalrusdError && e.code === "DB_INVALID_ARGUMENT",
   );
   await db.close();
 });

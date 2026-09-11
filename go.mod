@@ -1,4 +1,4 @@
-module walrus
+module walrusd
 
 go 1.25.0
 

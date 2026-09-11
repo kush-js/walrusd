@@ -1,22 +1,22 @@
-// WALrus end-to-end footgun suite (Node, file provider).
+// walrusd end-to-end footgun suite (Node, file provider).
 // Covers every fixed footgun plus the core contract. Run:
 //   cd bindings/node && npx tsc -p . && node --test smoke.test.mjs e2e.test.mjs
-// Uses only the public @walrus/db surface (dist/index.js) + file storage,
+// Uses only the public @walrusd/db surface (dist/index.js) + file storage,
 // so each test is hermetic under its own database_id / file root.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WALrusDatabase, WALrusError } from "./dist/index.js";
+import { WalrusdDatabase, WalrusdError } from "./dist/index.js";
 
-const ROOT = mkdtempSync(join(tmpdir(), "walrus-e2e-"));
+const ROOT = mkdtempSync(join(tmpdir(), "walrusd-e2e-"));
 // Shared Redis leases when available: the same suite then exercises
 // cross-handle exclusion instead of the in-process memory fallback.
-const REDIS = process.env.WALRUS_TEST_REDIS_ADDR || undefined;
+const REDIS = process.env.WALRUSD_TEST_REDIS_ADDR || undefined;
 if (REDIS) console.log(`e2e leases: redis ${REDIS}`);
 const freshDB = (owner = "e2e") =>
-  new WALrusDatabase({ owner: `${owner}-${Math.random().toString(36).slice(2)}`, redisAddress: REDIS });
+  new WalrusdDatabase({ owner: `${owner}-${Math.random().toString(36).slice(2)}`, redisAddress: REDIS });
 let seq = 0;
 const uniq = (p) => `${p}_${Date.now()}_${seq++}_${Math.random().toString(36).slice(2)}`;
 const d = (id, root = ROOT) => ({
@@ -48,7 +48,7 @@ describe("write/read contract", () => {
     const db = freshDB();
     await assert.rejects(
       db.write({ database: d(uniq("users/nokey")), idempotencyKey: "", statements: [{ sql: "SELECT 1" }] }),
-      (e) => e instanceof WALrusError && e.code === "DB_INVALID_ARGUMENT",
+      (e) => e instanceof WalrusdError && e.code === "DB_INVALID_ARGUMENT",
     );
     await db.close();
   });
@@ -277,7 +277,7 @@ describe("event loop is not blocked", () => {
 describe("storage isolation", () => {
   test("same database_id under different roots are independent", async () => {
     const db = freshDB();
-    const root2 = mkdtempSync(join(tmpdir(), "walrus-e2e-iso-"));
+    const root2 = mkdtempSync(join(tmpdir(), "walrusd-e2e-iso-"));
     const id = uniq("users/same");
     await db.write({
       database: d(id), idempotencyKey: uniq("k"),

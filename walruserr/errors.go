@@ -40,7 +40,7 @@ type RetryAfterHint interface {
 	RetryAfter() (d int64, ok bool)
 }
 
-// Error is a classified WALrus error.
+// Error is a classified walrusd error.
 type Error struct {
 	Class   Class
 	Message string
@@ -83,7 +83,7 @@ func Busy(message string, retryAfterMs int64) *Error {
 }
 
 // ClassOf returns the classification of err, or "" when err is not a
-// WALrus error.
+// walrusd error.
 func ClassOf(err error) Class {
 	var e *Error
 	if errors.As(err, &e) {

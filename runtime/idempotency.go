@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 
-	"walrus/walruserr"
+	"walrusd/walruserr"
 )
 
 // idempotencySchema ensures the user database records mutation results in
 // the same SQLite transaction as the mutation itself (spec §8).
 const idempotencySchema = `
-CREATE TABLE IF NOT EXISTS _walrus_idempotency (
+CREATE TABLE IF NOT EXISTS _walrusd_idempotency (
 	idempotency_key TEXT PRIMARY KEY,
 	txid TEXT NOT NULL
 )`
@@ -24,7 +24,7 @@ func lookupIdempotent(ctx context.Context, conn *sql.Conn, key string) (string, 
 	}
 	var txid string
 	err := conn.QueryRowContext(ctx,
-		`SELECT txid FROM _walrus_idempotency WHERE idempotency_key = ?`, key).Scan(&txid)
+		`SELECT txid FROM _walrusd_idempotency WHERE idempotency_key = ?`, key).Scan(&txid)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -37,7 +37,7 @@ func lookupIdempotent(ctx context.Context, conn *sql.Conn, key string) (string, 
 // recordIdempotent stores the key's result inside the same transaction.
 func recordIdempotent(ctx context.Context, conn *sql.Conn, key, txid string) error {
 	_, err := conn.ExecContext(ctx,
-		`INSERT INTO _walrus_idempotency (idempotency_key, txid) VALUES (?, ?)`, key, txid)
+		`INSERT INTO _walrusd_idempotency (idempotency_key, txid) VALUES (?, ?)`, key, txid)
 	if err != nil {
 		return walruserr.Wrap(walruserr.ClassConflict, "record idempotency result", err)
 	}

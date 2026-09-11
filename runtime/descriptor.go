@@ -1,4 +1,4 @@
-// Package runtime implements the WALrus Runtime surface (spec §11): WithRead
+// Package runtime implements the walrusd Runtime surface (spec §11): WithRead
 // and WithWrite. WithWrite owns the full write lifecycle — conditional lease
 // acquisition, VFS write-mode enable, SQLite transaction, the mandatory
 // flush-on-disable barrier, and conditional lease release. Callers must not
@@ -6,8 +6,8 @@
 package runtime
 
 import (
-	"walrus/identity"
-	"walrus/litestream"
+	"walrusd/identity"
+	"walrusd/litestream"
 )
 
 // CredentialSource resolves short-lived, org-scoped credentials at call time
@@ -34,7 +34,7 @@ type DatabaseDescriptor struct {
 	// DatabaseID is the caller's canonical database identifier — a
 	// path-safe relative key such as "user_1a4b" or "acme/agents/a7".
 	// Objects live at "<root_prefix>/<database_id>/". Use whatever
-	// partitioning fits your product; WALrus imposes no structure.
+	// partitioning fits your product; walrusd imposes no structure.
 	DatabaseID  string
 	Storage     litestream.Profile
 	Credentials CredentialSource

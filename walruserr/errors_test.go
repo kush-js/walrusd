@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"walrus/walruserr"
+	"walrusd/walruserr"
 )
 
 func TestClassOf(t *testing.T) {

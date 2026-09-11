@@ -8,20 +8,20 @@ import (
 	"testing"
 	"time"
 
-	"walrus/lease"
-	"walrus/litestream"
-	"walrus/runtime"
+	"walrusd/lease"
+	"walrusd/litestream"
+	"walrusd/runtime"
 )
 
 // TestWithWriteRedisEndToEnd runs the full spec §8 write path with leases in
 // Redis/Valkey shared by three runtimes (= three API instances): write on
 // one, idempotent retry on another, read-back on a third. The replica lives
 // on the local file provider to prove the object-storage side needs no
-// conditional-write support. Skipped unless WALRUS_TEST_REDIS_ADDR is set.
+// conditional-write support. Skipped unless WALRUSD_TEST_REDIS_ADDR is set.
 func TestWithWriteRedisEndToEnd(t *testing.T) {
-	addr := os.Getenv("WALRUS_TEST_REDIS_ADDR")
+	addr := os.Getenv("WALRUSD_TEST_REDIS_ADDR")
 	if addr == "" {
-		t.Skip("WALRUS_TEST_REDIS_ADDR not set; skipping live Redis end-to-end test")
+		t.Skip("WALRUSD_TEST_REDIS_ADDR not set; skipping live Redis end-to-end test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -64,7 +64,7 @@ func TestWithWriteRedisEndToEnd(t *testing.T) {
 			return err
 		}
 		_, err := conn.ExecContext(ctx,
-			`INSERT INTO notes (id, body) VALUES (1, 'hello from walrus')`)
+			`INSERT INTO notes (id, body) VALUES (1, 'hello from walrusd')`)
 		return err
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestWithWriteRedisEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("with read: %v", err)
 	}
-	if body != "hello from walrus" {
+	if body != "hello from walrusd" {
 		t.Fatalf("read body = %q", body)
 	}
 }

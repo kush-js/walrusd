@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"walrus/lease"
-	"walrus/litestream"
-	"walrus/runtime"
-	"walrus/walruserr"
+	"walrusd/lease"
+	"walrusd/litestream"
+	"walrusd/runtime"
+	"walrusd/walruserr"
 )
 
 // Adapter adapts the Go runtime.Runtime to the byte-envelope ABI.

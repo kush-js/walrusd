@@ -59,7 +59,7 @@ type Bridge struct {
 }
 
 // globalVFSSeq issues process-wide unique VFS names. One process can host
-// many Bridges (one WALrusDatabase handle each); per-Bridge counters
+// many Bridges (one WalrusdDatabase handle each); per-Bridge counters
 // collide on the process-global sqlite3vfs registry and shadow each
 // other's databases.
 var globalVFSSeq atomic.Uint64

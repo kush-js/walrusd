@@ -1,11 +1,11 @@
-import { WALrusDatabase } from "./bindings/node/src/index";
+import { WalrusdDatabase } from "./bindings/node/src/index";
 
-const db = new WALrusDatabase({ owner: "my-api-instance" });
+const db = new WalrusdDatabase({ owner: "my-api-instance" });
 
 // The descriptor is issued by your control plane — never by end users.
 const d = {
   database_id: "users/user_1",
-  storage: { provider: "file", file_root: "/tmp/walrus-quickstart" },
+  storage: { provider: "file", file_root: "/tmp/walrusd-quickstart" },
   credentials: {},
 };
 
@@ -19,7 +19,7 @@ await db.write({
 const { txid } = await db.write({
   database: d,
   idempotencyKey: "set-greeting",   // retrying this key is safe: deduplicated
-  statements: [{ sql: "INSERT OR REPLACE INTO kv (k, v) VALUES ('greeting', 'hello from WALrus')" }],
+  statements: [{ sql: "INSERT OR REPLACE INTO kv (k, v) VALUES ('greeting', 'hello from walrusd')" }],
 });
 console.log("durable at txid", txid);
 

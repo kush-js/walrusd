@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"walrus/identity"
-	"walrus/lease"
-	"walrus/litestream"
-	"walrus/runtime"
-	"walrus/walruserr"
+	"walrusd/identity"
+	"walrusd/lease"
+	"walrusd/litestream"
+	"walrusd/runtime"
+	"walrusd/walruserr"
 )
 
 func class(err error) string { return string(walruserr.ClassOf(err)) }

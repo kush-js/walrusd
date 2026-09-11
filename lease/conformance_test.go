@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"walrus/lease"
+	"walrusd/lease"
 )
 
 // RunStoreConformance exercises the lease.Store CAS contract every backend

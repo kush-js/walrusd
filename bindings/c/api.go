@@ -1,4 +1,4 @@
-// Package c exposes the narrow, versioned C ABI over the WALrus Go core
+// Package c exposes the narrow, versioned C ABI over the walrusd Go core
 // (spec §11). It is data-oriented: serialized request/response envelopes,
 // no raw SQLite pointers ever cross this boundary. JavaScript code cannot
 // bypass the lease or flush protocol (spec §18).
@@ -8,7 +8,7 @@ package c
 #include <stdint.h>
 #include <stdlib.h>
 
-static void walrus_c_free(void* p) { free(p); }
+static void walrusd_c_free(void* p) { free(p); }
 */
 import "C"
 
@@ -18,7 +18,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"walrus/walruserr"
+	"walrusd/walruserr"
 )
 
 // ProtocolVersion is the envelope protocol version. Additive changes only
@@ -65,34 +65,34 @@ type handledCtx struct {
 	DeadlineMs int64 `json:"deadline_ms,omitempty"`
 }
 
-// walrus_runtime_write executes one write batch. request_bytes is a JSON
+// walrusd_runtime_write executes one write batch. request_bytes is a JSON
 // WriteRequest; the response is a JSON envelope.
 //
-//export walrus_runtime_write
-func walrus_runtime_write(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
+//export walrusd_runtime_write
+func walrusd_runtime_write(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
 	return dispatch(h, "write", requestBytes, n, deadlineMs)
 }
 
-// walrus_runtime_read executes one read batch.
+// walrusd_runtime_read executes one read batch.
 //
-//export walrus_runtime_read
-func walrus_runtime_read(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
+//export walrusd_runtime_read
+func walrusd_runtime_read(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
 	return dispatch(h, "read", requestBytes, n, deadlineMs)
 }
 
-// walrus_runtime_read_dsn registers the read VFS for a descriptor and
+// walrusd_runtime_read_dsn registers the read VFS for a descriptor and
 // returns the DSN as a JSON envelope. The host opens it with its OWN
 // SQLite (bun:sqlite) to read through litestream VFS natively.
 //
-//export walrus_runtime_read_dsn
-func walrus_runtime_read_dsn(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
+//export walrusd_runtime_read_dsn
+func walrusd_runtime_read_dsn(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {
 	return dispatch(h, "read_dsn", requestBytes, n, deadlineMs)
 }
 
-// walrus_runtime_version returns {"api_version":N,"core_version":"..."}.
+// walrusd_runtime_version returns {"api_version":N,"core_version":"..."}.
 //
-//export walrus_runtime_version
-func walrus_runtime_version() *C.char {
+//export walrusd_runtime_version
+func walrusd_runtime_version() *C.char {
 	res, _ := json.Marshal(map[string]any{
 		"api_version":  ProtocolVersion,
 		"core_version": CoreVersion,
@@ -100,10 +100,10 @@ func walrus_runtime_version() *C.char {
 	return cString(mustEnvelopeOK(res))
 }
 
-// walrus_runtime_close releases a runtime handle.
+// walrusd_runtime_close releases a runtime handle.
 //
-//export walrus_runtime_close
-func walrus_runtime_close(h C.uint64_t) *C.char {
+//export walrusd_runtime_close
+func walrusd_runtime_close(h C.uint64_t) *C.char {
 	handleMu.Lock()
 	entry, ok := runtimes[RuntimeHandle(h)]
 	if ok {
@@ -119,13 +119,13 @@ func walrus_runtime_close(h C.uint64_t) *C.char {
 	return cString(mustEnvelopeOK(nil))
 }
 
-// walrus_free frees memory returned by this ABI. Exported symbol is
-// walrus_free; it delegates to the C free.
+// walrusd_free frees memory returned by this ABI. Exported symbol is
+// walrusd_free; it delegates to the C free.
 //
-//export walrus_free
-func walrus_free(p *C.char) {
+//export walrusd_free
+func walrusd_free(p *C.char) {
 	if p != nil {
-		C.walrus_c_free(unsafe.Pointer(p))
+		C.walrusd_c_free(unsafe.Pointer(p))
 	}
 }
 
@@ -160,7 +160,7 @@ func dispatch(h C.uint64_t, op string, requestBytes *C.char, n C.int, deadlineMs
 func mustEnvelopeOK(result json.RawMessage) []byte {
 	b, err := json.Marshal(envelope{APIVersion: ProtocolVersion, OK: true, Result: result})
 	if err != nil {
-		panic(fmt.Sprintf("walrus/c: marshal envelope: %v", err))
+		panic(fmt.Sprintf("walrusd/c: marshal envelope: %v", err))
 	}
 	return b
 }

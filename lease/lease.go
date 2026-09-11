@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"walrus/identity"
-	"walrus/walruserr"
+	"walrusd/identity"
+	"walrusd/walruserr"
 )
 
 // FormatVersion is the lease record format (spec §7.1).

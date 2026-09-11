@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"walrus/lease"
-	"walrus/litestream"
-	"walrus/runtime"
-	"walrus/walruserr"
+	"walrusd/lease"
+	"walrusd/litestream"
+	"walrusd/runtime"
+	"walrusd/walruserr"
 )
 
 // footgunRuntime builds a runtime with caller-supplied timing for

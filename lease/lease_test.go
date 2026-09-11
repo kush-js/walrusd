@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"walrus/identity"
-	"walrus/lease"
-	"walrus/walruserr"
+	"walrusd/identity"
+	"walrusd/lease"
+	"walrusd/walruserr"
 )
 
 func newManager(t *testing.T, mutate func(*lease.Config)) (*lease.Manager, *lease.MemoryStore) {

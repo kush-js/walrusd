@@ -1,4 +1,4 @@
-# WALrus Embedded SQLite Runtime Specification
+# walrusd Embedded SQLite Runtime Specification
 
 **Status:** implementation specification  
 **Audience:** engineering team or coding agent  
@@ -7,14 +7,14 @@
 
 ## 1. Objective
 
-Build **WALrus**, a multi-tenant SQLite runtime for Basemnt in which every user has one logical SQLite database and every organization owns the object-storage bucket that persists its databases.
+Build **walrusd**, a multi-tenant SQLite runtime for Basemnt in which every user has one logical SQLite database and every organization owns the object-storage bucket that persists its databases.
 
 The runtime is embedded directly in each API process. Its core is written in Go because Litestream VFS requires CGO. Go services import the core package directly; Node.js and Bun services use a thin native binding backed by the same Go core. There is no dedicated writer-worker fleet, no Consul, no centralized database router, no sticky sessions, and no worker-to-worker forwarding. Any API instance can handle any request. Before a mutation, its embedded runtime takes a Redis/Valkey lease for that user's database, performs the SQLite transaction through Litestream VFS write mode, synchronously flushes the resulting LTX data to object storage, and conditionally releases the lease.
 
 The system is deliberately simple:
 
 ```text
-Load balancer -> any stateless API -> embedded WALrus runtime
+Load balancer -> any stateless API -> embedded walrusd runtime
                                         (Go package or Node/Bun native binding)
                                                       |
                                                SQLite + Litestream VFS
@@ -52,7 +52,7 @@ Litestream VFS is a CGO-backed SQLite VFS. In write mode it maintains an ephemer
 
 This runtime supplies the application-level single-writer coordination that Litestream requires. It must not claim stronger semantics than it implements:
 
-- A conditional lease prevents multiple **well-behaved WALrus runtimes** from intentionally entering write mode at once.
+- A conditional lease prevents multiple **well-behaved walrusd runtimes** from intentionally entering write mode at once.
 - A successful flush proves the runtime uploaded its LTX data before releasing the lease.
 - A lost/expired lease cannot cryptographically stop a faulty process that ignores the protocol and continues uploading LTX data.
 - Any future requirement for hard, storage-enforced stale-writer fencing requires a fork/wrapper of Litestream's replica write path or a different storage format.
@@ -87,7 +87,7 @@ Bucket layout:
 
 `database_id` is chosen by the embedding application (for example
 `user_1a4b`, `users/u1`, or `acme/agents/a7`) and must be a canonical,
-path-safe relative key. WALrus imposes no `users/`-style structure on it.
+path-safe relative key. walrusd imposes no `users/`-style structure on it.
 Database paths and lease paths are always derived by trusted code from the
 storage profile and canonical database ID.
 
@@ -105,7 +105,7 @@ PUTs (read-after-write) and listings expose the expected LTX state.
 The Go module is the sole implementation of database semantics. It is packaged for direct Go use and through a small C ABI used by the Node/Bun native addon:
 
 ```text
-walrus/
+walrusd/
   identity/       canonical database IDs and object paths
   storage/        provider adapters and capability validation
   lease/          CAS lease acquisition, renewal, release, retry policy
@@ -123,7 +123,7 @@ bindings/
 
 No binding reimplements lease JSON, object-key construction, retry behavior, or Litestream lifecycle handling. Those semantics remain in Go and are tested once.
 
-Do not use the existing Litestream Python/Node loadable extension for this multi-tenant runtime: its replica URL is configured from process environment at startup and is not suitable for selecting a tenant bucket/database per request. The WALrus Node/Bun addon calls the Go core instead, which receives a runtime database descriptor per operation.
+Do not use the existing Litestream Python/Node loadable extension for this multi-tenant runtime: its replica URL is configured from process environment at startup and is not suitable for selecting a tenant bucket/database per request. The walrusd Node/Bun addon calls the Go core instead, which receives a runtime database descriptor per operation.
 
 ## 7. Lease protocol
 
@@ -299,16 +299,16 @@ type Runtime interface {
 
 ### Node.js and Bun interface
 
-Ship one Node-API addon, published as `@walrus/db`, with prebuilt binaries for supported operating systems and CPU architectures. Node.js loads the `.node` module directly. Bun uses the same package through its Node-API compatibility layer; Bun support is gated by the same integration suite, not assumed from API compatibility alone.
+Ship one Node-API addon, published as `@walrusd/db`, with prebuilt binaries for supported operating systems and CPU architectures. Node.js loads the `.node` module directly. Bun uses the same package through its Node-API compatibility layer; Bun support is gated by the same integration suite, not assumed from API compatibility alone.
 
 The Node/Bun interface must call the Go core through a narrow C ABI. It must never shell out to a Litestream process, mutate process environment variables, or use the stock `litestream-vfs` Node package.
 
 Expose batch-oriented operations so the native core can safely keep one SQLite connection and one lease for the complete operation:
 
 ```ts
-import { WALrusDatabase } from "@walrus/db";
+import { WalrusdDatabase } from "@walrusd/db";
 
-const database = new WALrusDatabase({ credentialResolver });
+const database = new WalrusdDatabase({ credentialResolver });
 
 const result = await database.write({
   database: descriptor,
@@ -338,9 +338,9 @@ The binding accepts an opaque, trusted `DatabaseDescriptor` issued by the applic
 Keep the C ABI small, versioned, and data-oriented. It accepts serialized descriptors, operation batches, cancellation/deadline information, and returns serialized result/error envelopes. The addon translates those envelopes to TypeScript values and typed errors.
 
 ```text
-walrus_runtime_write(request_bytes, deadline) -> response_bytes
-walrus_runtime_read(request_bytes, deadline)  -> response_bytes
-walrus_runtime_version()                      -> version_bytes
+walrusd_runtime_write(request_bytes, deadline) -> response_bytes
+walrusd_runtime_read(request_bytes, deadline)  -> response_bytes
+walrusd_runtime_version()                      -> version_bytes
 ```
 
 The Go core owns all SQLite/VFS handles. The Node/Bun addon never receives a raw SQLite pointer or direct Litestream VFS file handle. This prevents JavaScript code from bypassing the lease and flush protocol.
@@ -381,13 +381,13 @@ Required classified errors:
 
 - Authenticate and authorize every request before deriving its descriptor.
 - Use per-organization scoped storage credentials, preferably short-lived and obtained through a secret manager/workload identity.
-- Restrict credentials to one organization bucket and WALrus root prefix.
+- Restrict credentials to one organization bucket and walrusd root prefix.
 - Enforce TLS/mTLS for control-plane credential delivery and object-store transport.
 - Require storage encryption policy validation during organization onboarding.
 - Keep credentials, SQL values, object bodies, signed URLs, and raw LTX data out of logs/traces.
 - Canonicalize all object paths; reject path traversal and invalid encoded IDs.
 - Audit storage-profile changes, failed capability checks, lease takeovers, write conflicts, and privileged operations.
-- Use deployment/IAM policy to prevent unrelated application code from directly mutating the WALrus lease and replica prefixes.
+- Use deployment/IAM policy to prevent unrelated application code from directly mutating the walrusd lease and replica prefixes.
 
 ## 14. Observability
 
@@ -444,7 +444,7 @@ expose the expected LTX state, with read-after-write visibility.
 
 ## 16. Deployment and configuration
 
-Go API deployments include the WALrus Go runtime and the CGO-enabled Litestream VFS build directly. Node.js and Bun deployments include the `@walrus/db` Node-API addon, which bundles or dynamically links a version-matched Go core and CGO-enabled VFS build. Do not run a separate router or worker process. The API becomes ready only after it validates its library/core protocol versions, native-addon loadability where applicable, temporary-storage path, control-plane credential source, and supported storage profile.
+Go API deployments include the walrusd Go runtime and the CGO-enabled Litestream VFS build directly. Node.js and Bun deployments include the `@walrusd/db` Node-API addon, which bundles or dynamically links a version-matched Go core and CGO-enabled VFS build. Do not run a separate router or worker process. The API becomes ready only after it validates its library/core protocol versions, native-addon loadability where applicable, temporary-storage path, control-plane credential source, and supported storage profile.
 
 Release prebuilt Node-API binaries for each supported platform and architecture, with a source-build fallback only for development. Pin the addon to an exact compatible core major/minor version. CI must run the package against supported Node.js LTS versions and the supported Bun version on every release.
 
@@ -481,7 +481,7 @@ Validate at startup that request timeout plus expected flush duration is below l
 2. Object storage is the durable source of the SQLite/LTX replica and lease record.
 3. No API process writes a database without first conditionally acquiring its lease.
 4. Lease acquisition and release always use the fencing token returned by the prior read/create.
-5. The lease owner is the only WALrus runtime, regardless of language binding, allowed to enable Litestream VFS write mode for that database.
+5. The lease owner is the only walrusd runtime, regardless of language binding, allowed to enable Litestream VFS write mode for that database.
 6. A mutation is not acknowledged and the lease is not released until the same VFS instance reports successful remote flush.
 7. API instances are stateless; no request/session affinity is required.
 8. Any API instance may acquire the next lease after release or expiry.

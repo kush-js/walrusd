@@ -176,9 +176,9 @@ func (w *wrapperVFS) ensureBufferRoot() (string, error) {
 	} else if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", fmt.Errorf("litestream: create write buffer root: %w", err)
 	}
-	pattern := "walrus-tmp-*"
+	pattern := "walrusd-tmp-*"
 	if w.inner.WriteEnabled {
-		pattern = "walrus-write-*"
+		pattern = "walrusd-write-*"
 	}
 	root, err := os.MkdirTemp(base, pattern)
 	if err != nil {

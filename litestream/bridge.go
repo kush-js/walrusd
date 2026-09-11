@@ -121,7 +121,7 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 	w := b.newWrapperVFS(client, false)
 	// Litestream requires a positive poll interval (its monitor builds a
 	// ticker from it) and a positive sync interval when write mode is on.
-	name := fmt.Sprintf("walrus_%d", globalVFSSeq.Add(1))
+	name := fmt.Sprintf("walrusd_%d", globalVFSSeq.Add(1))
 	if err := registerVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register vfs %s: %w", name, err)
 	}
@@ -156,7 +156,7 @@ func (d *Database) ensureWriteVFS() (*wrapperVFS, error) {
 		return nil, fmt.Errorf("litestream: replica client: %w", err)
 	}
 	w := d.Bridge.newWrapperVFS(client, true)
-	name := fmt.Sprintf("walrus_w%d", globalVFSSeq.Add(1))
+	name := fmt.Sprintf("walrusd_w%d", globalVFSSeq.Add(1))
 	if err := registerVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register write vfs %s: %w", name, err)
 	}
@@ -191,12 +191,12 @@ func noOpLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(debugWriter{}, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-// debugWriter routes VFS internal logs to stderr when WALRUS_VFS_DEBUG is
+// debugWriter routes VFS internal logs to stderr when WALRUSD_VFS_DEBUG is
 // set, else discards. VFS log lines contain only page/TXID metadata.
 type debugWriter struct{}
 
 func (debugWriter) Write(p []byte) (int, error) {
-	if os.Getenv("WALRUS_VFS_DEBUG") != "" {
+	if os.Getenv("WALRUSD_VFS_DEBUG") != "" {
 		return os.Stderr.Write(p)
 	}
 	return len(p), nil
