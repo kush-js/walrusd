@@ -23,13 +23,18 @@ type InitRequest struct {
 }
 
 type runtimeConfig struct {
-	RequestTimeoutMs     int64  `json:"request_timeout_ms,omitempty"`
-	LeaseDurationMs      int64  `json:"lease_duration_ms,omitempty"`
-	ClockSkewMs          int64  `json:"clock_skew_ms,omitempty"`
-	AcquireRetryBudgetMs int64  `json:"acquire_retry_budget_ms,omitempty"`
-	RetryBackoffMinMs    int64  `json:"retry_backoff_min_ms,omitempty"`
-	RetryBackoffMaxMs    int64  `json:"retry_backoff_max_ms,omitempty"`
-	WriteBufferRootPath  string `json:"write_buffer_root_path,omitempty"`
+	RequestTimeoutMs     int64    `json:"request_timeout_ms,omitempty"`
+	LeaseDurationMs      int64    `json:"lease_duration_ms,omitempty"`
+	ClockSkewMs          int64    `json:"clock_skew_ms,omitempty"`
+	AcquireRetryBudgetMs int64    `json:"acquire_retry_budget_ms,omitempty"`
+	RetryBackoffMinMs    int64    `json:"retry_backoff_min_ms,omitempty"`
+	RetryBackoffMaxMs    int64    `json:"retry_backoff_max_ms,omitempty"`
+	RetryFixedDelayMs    *int64   `json:"retry_fixed_delay_ms,omitempty"`
+	RetryFixedCount      *int     `json:"retry_fixed_count,omitempty"`
+	RetryMultiplier      *float64 `json:"retry_multiplier,omitempty"`
+	RetryMaxDelayMs      *int64   `json:"retry_max_delay_ms,omitempty"`
+	RetryMaxTotalMs      *int64   `json:"retry_max_total_ms,omitempty"`
+	WriteBufferRootPath  string   `json:"write_buffer_root_path,omitempty"`
 	// Redis backing for leases (shared deployments). Empty address falls
 	// back to an in-process memory store: fine for dev and single-process
 	// use, but it serializes only within this handle — cross-process
@@ -68,6 +73,21 @@ func walrusd_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
 	}
 	if v := r.Config.RetryBackoffMaxMs; v > 0 {
 		cfg.Lease.RetryBackoffMax = time.Duration(v) * time.Millisecond
+	}
+	if v := r.Config.RetryFixedDelayMs; v != nil {
+		cfg.RetryPolicy.FixedDelay = time.Duration(*v) * time.Millisecond
+	}
+	if v := r.Config.RetryFixedCount; v != nil {
+		cfg.RetryPolicy.FixedRetries = *v
+	}
+	if v := r.Config.RetryMultiplier; v != nil {
+		cfg.RetryPolicy.Multiplier = *v
+	}
+	if v := r.Config.RetryMaxDelayMs; v != nil {
+		cfg.RetryPolicy.MaxDelay = time.Duration(*v) * time.Millisecond
+	}
+	if v := r.Config.RetryMaxTotalMs; v != nil {
+		cfg.RetryPolicy.MaxTotal = time.Duration(*v) * time.Millisecond
 	}
 	if p := r.Config.WriteBufferRootPath; p != "" {
 		cfg.Litestream.WriteBufferRootPath = p

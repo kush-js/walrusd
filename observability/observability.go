@@ -22,6 +22,7 @@ type Metrics struct {
 	LeaseReleaseConflicts uint64
 
 	// Write-path signals.
+	WriteRetries             uint64
 	WriteTransactions        uint64
 	WriteTransactionFailures uint64
 	FlushSuccesses           uint64
@@ -112,6 +113,7 @@ func (r *Registry) Total() Metrics {
 		total.LeaseExpiryTakeovers += m.LeaseExpiryTakeovers
 		total.LeaseReleased += m.LeaseReleased
 		total.LeaseReleaseConflicts += m.LeaseReleaseConflicts
+		total.WriteRetries += m.WriteRetries
 		total.WriteTransactions += m.WriteTransactions
 		total.WriteTransactionFailures += m.WriteTransactionFailures
 		total.FlushSuccesses += m.FlushSuccesses

@@ -22,6 +22,8 @@ func newTestRuntime(t *testing.T, owner string) *runtime.Runtime {
 	store := lease.NewMemoryStore()
 	cfg := runtime.DefaultConfig()
 	cfg.Litestream.HydrationEnabled = false
+	// Most tests target one write attempt. Retry-specific tests opt back in.
+	cfg.RetryPolicy = runtime.RetryPolicy{}
 	rt, err := runtime.New(store, owner, cfg)
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)

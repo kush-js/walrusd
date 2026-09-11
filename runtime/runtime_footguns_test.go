@@ -25,6 +25,7 @@ func footgunRuntime(t *testing.T, store lease.Store, owner string, reqTimeout, l
 	cfg.Lease.AcquireRetryBudget = 200 * time.Millisecond
 	cfg.Lease.RetryBackoffMin = 5 * time.Millisecond
 	cfg.Lease.RetryBackoffMax = 20 * time.Millisecond
+	cfg.RetryPolicy = runtime.RetryPolicy{}
 	rt, err := runtime.New(store, owner, cfg)
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)

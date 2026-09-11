@@ -102,6 +102,7 @@ func TestConcurrentFirstWritesDifferentDatabases(t *testing.T) {
 func TestMaxTempWriteBufferIsEnforced(t *testing.T) {
 	cfg := runtime.DefaultConfig()
 	cfg.MaxTempWriteBuffer = 16 * 1024
+	cfg.RetryPolicy = runtime.RetryPolicy{}
 	rt, err := runtime.New(lease.NewMemoryStore(), "api-1", cfg)
 	if err != nil {
 		t.Fatal(err)

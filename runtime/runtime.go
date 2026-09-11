@@ -23,6 +23,7 @@ type Config struct {
 	Lease               lease.Config
 	Litestream          litestream.Config
 	RequestTimeout      time.Duration // 20s
+	RetryPolicy         RetryPolicy   // outer WithWrite retry policy
 	ReadInstanceIdleTTL time.Duration
 	MaxReadInstances    int
 	MaxTempWriteBuffer  int64
@@ -37,6 +38,7 @@ func DefaultConfig() Config {
 		Lease:                     lease.DefaultConfig(),
 		Litestream:                litestream.DefaultConfig(),
 		RequestTimeout:            20 * time.Second,
+		RetryPolicy:               DefaultRetryPolicy(),
 		ReadInstanceIdleTTL:       60 * time.Second,
 		MaxReadInstances:          200,
 		MaxTempWriteBuffer:        268435456,
@@ -368,8 +370,9 @@ type WriteResult struct {
 //	SQLite transaction -> disable write mode (MANDATORY flush barrier) ->
 //	conditionally release lease -> acknowledge.
 //
-// On any failure from acquisition through flush it never reports success,
-// never releases with a stale token, and discards the write session.
+// Retryable failures repeat the whole operation with the same idempotency
+// key. On any failure from acquisition through flush it never reports
+// success, never releases with a stale token, and discards the write session.
 func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempotencyKey string, fn func(*sql.Conn) error) (WriteResult, error) {
 	var zero WriteResult
 	if idempotencyKey == "" {
@@ -382,18 +385,90 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	if err != nil {
 		return zero, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
+	dbKey := db.String()
+	policy := r.cfg.RetryPolicy.withDefaults()
+	start := time.Now()
+
+	// The retry budget bounds the whole operation; RequestTimeout bounds each
+	// individual attempt so a blocked acquire/transaction/flush cannot pin a
+	// caller for the entire retry window.
+	budgetCtx := ctx
+	var budgetDeadline time.Time
+	if policy.MaxTotal > 0 {
+		budgetDeadline = start.Add(policy.MaxTotal)
+		if deadline, ok := budgetCtx.Deadline(); !ok || budgetDeadline.Before(deadline) {
+			var cancelBudget context.CancelFunc
+			budgetCtx, cancelBudget = context.WithDeadline(budgetCtx, budgetDeadline)
+			defer cancelBudget()
+		}
+	}
+
+	for retry := 0; ; retry++ {
+		attemptCtx := budgetCtx
+		var cancelAttempt context.CancelFunc
+		if r.cfg.RequestTimeout > 0 {
+			attemptCtx, cancelAttempt = context.WithTimeout(budgetCtx, r.cfg.RequestTimeout)
+		}
+		res, err := r.withWriteAttempt(attemptCtx, db, d, idempotencyKey, fn)
+		if cancelAttempt != nil {
+			cancelAttempt()
+		}
+		if err == nil {
+			return res, nil
+		}
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
+		if budgetCtx.Err() != nil {
+			if isRetryableWrite(err) {
+				return zero, err
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return zero, walrusderr.Busy("write retry budget exhausted", 0)
+			}
+		}
+		if policy.MaxTotal <= 0 || !isRetryableWrite(err) {
+			return zero, err
+		}
+
+		delay := policy.delay(retry+1, err)
+		if delay <= 0 {
+			return zero, err
+		}
+		if !budgetDeadline.IsZero() {
+			remaining := time.Until(budgetDeadline)
+			if remaining <= 0 {
+				return zero, err
+			}
+			if delay > remaining {
+				delay = remaining
+			}
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return zero, ctx.Err()
+		case <-budgetCtx.Done():
+			timer.Stop()
+			return zero, err
+		case <-timer.C:
+		}
+		if !budgetDeadline.IsZero() && !time.Now().Before(budgetDeadline) {
+			return zero, err
+		}
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteRetries++ })
+	}
+}
+
+func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, d DatabaseDescriptor, idempotencyKey string, fn func(*sql.Conn) error) (WriteResult, error) {
+	var zero WriteResult
 	vfs, err := r.database(d, db)
 	if err != nil {
 		return zero, err
 	}
 	dbKey := db.String()
-	// Bound the whole write (acquire+tx+flush+release) even for callers
-	// without a deadline. Parent cancellation still wins.
-	if r.cfg.RequestTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.cfg.RequestTimeout)
-		defer cancel()
-	}
 	// 1. Conditionally acquire the lease (spec §7.2).
 	held, err := r.leases.Acquire(ctx, db, d.Storage.RootPrefix)
 	if err != nil {

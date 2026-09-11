@@ -172,19 +172,34 @@ Rules the runtime enforces:
 - On return, the flush is confirmed and the lease released. `res.TXID` is
   the remote transaction ID — hand it to subsequent reads if you need
   explicit read-after-write reasoning (spec §9).
+- `WithWrite` automatically retries `DB_BUSY`, `DB_LEASE_CONFLICT`,
+  `DB_FLUSH_FAILED`, `DB_REMOTE_UNAVAILABLE`, and `DB_CONFLICT` with the
+  same idempotency key. The default retry schedule is ten 1s delays followed
+  by doubling delays (`2s`, `4s`, `8s`, `16s`, `32s`, `64s`) with ±20%
+  jitter and a 64s total wall-clock budget. A `Retry-After` hint longer than
+  the computed delay is honored.
+- The caller's context deadline always wins. If the retry budget is
+  exhausted, the final classified error (for example `DB_BUSY`) is
+  returned to the caller.
 
 ### Errors and retry
 
 All errors are classified (`walrusderr`); match on `Class`, not on strings
 (spec §11):
 
+The runtime retries only the five transient classes listed below. Retries
+wrap the whole operation, so the same idempotency key is reused and a retry
+whose first attempt committed is detected from the transactionally recorded
+dedup row and returns `Deduplicated: true` without invoking the callback
+again. Terminal errors are never retried.
+
 | Class | Meaning | What to do |
 |---|---|---|
-| `DB_BUSY` | Lease held by a non-expired owner | Retry; honor `Retry-After` hint if present |
-| `DB_LEASE_CONFLICT` | CAS conflict or stale release | Retry the whole operation |
-| `DB_FLUSH_FAILED` | SQL may be locally committed, remote flush **not** confirmed | Retry with the **same** idempotency key. The lease is left to expire; never treat the write as durable |
-| `DB_REMOTE_UNAVAILABLE` | Object store unusable | Back off, retry |
-| `DB_CONFLICT` | Litestream observed another writer | Close/reopen; retry |
+| `DB_BUSY` | Lease held by a non-expired owner | Runtime retries automatically; if the retry budget is exhausted, retry later or let the caller deadline win |
+| `DB_LEASE_CONFLICT` | CAS conflict or stale release | Runtime retries the whole operation automatically |
+| `DB_FLUSH_FAILED` | SQL may be locally committed, remote flush **not** confirmed | Runtime retries with the **same** idempotency key. The lease is left to expire; never treat the write as durable |
+| `DB_REMOTE_UNAVAILABLE` | Object store unusable | Runtime backs off and retries automatically |
+| `DB_CONFLICT` | Litestream observed another writer | Runtime retries automatically through the idempotent flow |
 | `DB_CONFIGURATION_INVALID` | Bad profile/capability/config | Do not retry; fix configuration |
 | `DB_INVALID_ARGUMENT` | Bad descriptor, key, or SQL | Do not retry; fix the caller |
 | `DB_IDEMPOTENCY_MISMATCH` | Same key reused with different statements | Do not retry; caller bug |
@@ -197,7 +212,10 @@ if walrusderr.ClassOf(err) == walrusderr.ClassFlushFailed {
 ```
 `DB_FLUSH_FAILED` is the critical case: the write may or may not have
 reached object storage. The idempotency key makes the retry idempotent —
-that is the whole contract.
+that is the whole contract. The runtime never acknowledges a mutation or
+releases its lease until the same VFS instance confirms the remote flush;
+automatic retries repeat the entire operation and never release a lease that
+saw a failed flush.
 
 ---
 
@@ -231,7 +249,7 @@ import { WalrusdDatabase, WalrusdError } from "@walrusd/db";
 
 const db = new WalrusdDatabase({
   owner: "api-pod-7",                 // this instance's identity (lease owner)
-  requestTimeoutMs: 20_000,
+  requestTimeoutMs: 20_000,           // per-attempt timeout; default 20_000
   // writeBufferRootPath: "/tmp/walrusd-buffers",  // optional
   redisAddress: "127.0.0.1:6379",    // required for shared leases;
   // redisPassword: "...", redisDB: 0,            // optional
@@ -325,9 +343,29 @@ defaulted from spec §16):
 ```json
 {
   "owner": "api-pod-7",
-  "config": { "request_timeout_ms": 20000, "write_buffer_root_path": "/tmp/walrusd", "redis_address": "127.0.0.1:6379" }
+  "config": {
+    "request_timeout_ms": 20000,
+    "lease_duration_ms": 30000,
+    "clock_skew_ms": 2000,
+    "acquire_retry_budget_ms": 3000,
+    "retry_backoff_min_ms": 25,
+    "retry_backoff_max_ms": 500,
+    "retry_fixed_delay_ms": 1000,
+    "retry_fixed_count": 10,
+    "retry_multiplier": 2,
+    "retry_max_delay_ms": 64000,
+    "retry_max_total_ms": 64000,
+    "write_buffer_root_path": "/tmp/walrusd",
+    "redis_address": "127.0.0.1:6379"
+  }
 }
 ```
+
+`retry_max_total_ms: 0` disables automatic outer retries. The existing
+`retry_backoff_min_ms` / `retry_backoff_max_ms` fields configure the inner
+lease-acquisition loop; the `retry_fixed_*`, `retry_multiplier`,
+`retry_max_delay_ms`, and `retry_max_total_ms` fields configure the outer
+whole-operation retry policy.
 
 `write` request:
 
@@ -372,11 +410,16 @@ Go `runtime.Config` (defaults from spec §16):
 
 | Field | Default | Notes |
 |---|---|---|
-| `RequestTimeout` | 20s | Per-operation deadline |
+| `RequestTimeout` | 20s | Per-write-attempt deadline |
 | `Lease.Duration` | 30s | Must exceed request timeout + skew (validated) |
 | `Lease.ClockSkewAllowance` | 2s | Expiry safety margin |
 | `Lease.AcquireRetryBudget` | 3s | Total bounded retry window |
 | `Lease.RetryBackoffMin/Max` | 25ms / 500ms | Jittered backoff |
+| `RetryPolicy.FixedDelay` | 1s | Initial outer retry delay |
+| `RetryPolicy.FixedRetries` | 10 | Fixed-delay retry count before exponential backoff |
+| `RetryPolicy.Multiplier` | 2 | Exponential delay multiplier |
+| `RetryPolicy.MaxDelay` | 64s | Maximum single outer retry delay |
+| `RetryPolicy.MaxTotal` | 64s | Whole outer retry wall-clock budget; `0` disables retries |
 | `ReadInstanceIdleTTL` | 60s | Read-connection cache eviction |
 | `MaxReadInstances` | 200 | Bounded per-process cache |
 | `MaxTempWriteBuffer` | 256 MiB | Per-process write-buffer cap |

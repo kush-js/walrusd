@@ -75,7 +75,31 @@ export interface ReadResult {
 export interface RuntimeOptions {
   owner: string;
   writeBufferRootPath?: string;
+  /** Per-write-attempt timeout in milliseconds. Default: 20000. */
   requestTimeoutMs?: number;
+  /** Lease duration in milliseconds. Must exceed requestTimeoutMs plus
+   *  clockSkewMs. Default: 30000. */
+  leaseDurationMs?: number;
+  /** Lease expiry safety margin in milliseconds. Default: 2000. */
+  clockSkewMs?: number;
+  /** Inner lease-acquisition retry window in milliseconds. Default: 3000. */
+  acquireRetryBudgetMs?: number;
+  /** Minimum inner lease retry backoff in milliseconds. Default: 25. */
+  retryBackoffMinMs?: number;
+  /** Maximum inner lease retry backoff in milliseconds. Default: 500. */
+  retryBackoffMaxMs?: number;
+  /** First outer retry delays in milliseconds. Default: 1000. */
+  retryFixedDelayMs?: number;
+  /** Number of fixed outer retry delays before exponential backoff.
+   *  Default: 10. */
+  retryFixedCount?: number;
+  /** Multiplier for delays after the fixed retries. Default: 2. */
+  retryMultiplier?: number;
+  /** Maximum single outer retry delay in milliseconds. Default: 64000. */
+  retryMaxDelayMs?: number;
+  /** Total outer retry wall-clock budget in milliseconds. Default: 64000.
+   *  Set to 0 to disable automatic write retries. */
+  retryMaxTotalMs?: number;
   /** Redis/Valkey address (host:port) for shared leases. Unset = in-process
    *  memory leases (dev/single-process only; no cross-process exclusion). */
   redisAddress?: string;
@@ -168,6 +192,7 @@ export class WalrusdDatabase {
   private native: NativeAPI;
   private handle: number;
   private defaultDeadlineMs: number;
+  private defaultWriteDeadlineMs: number;
 
   constructor(options: RuntimeOptions) {
     this.native = loadNative();
@@ -176,6 +201,16 @@ export class WalrusdDatabase {
         owner: options.owner,
         config: {
           request_timeout_ms: options.requestTimeoutMs,
+          lease_duration_ms: options.leaseDurationMs,
+          clock_skew_ms: options.clockSkewMs,
+          acquire_retry_budget_ms: options.acquireRetryBudgetMs,
+          retry_backoff_min_ms: options.retryBackoffMinMs,
+          retry_backoff_max_ms: options.retryBackoffMaxMs,
+          retry_fixed_delay_ms: options.retryFixedDelayMs,
+          retry_fixed_count: options.retryFixedCount,
+          retry_multiplier: options.retryMultiplier,
+          retry_max_delay_ms: options.retryMaxDelayMs,
+          retry_max_total_ms: options.retryMaxTotalMs,
           write_buffer_root_path: options.writeBufferRootPath,
           redis_address: options.redisAddress,
           redis_password: options.redisPassword,
@@ -184,6 +219,10 @@ export class WalrusdDatabase {
       })
     );
     this.defaultDeadlineMs = options.requestTimeoutMs ?? 20_000;
+    const writeBudgetMs = options.retryMaxTotalMs && options.retryMaxTotalMs > 0
+      ? options.retryMaxTotalMs
+      : 20_000;
+    this.defaultWriteDeadlineMs = options.requestTimeoutMs ?? writeBudgetMs;
   }
 
   /** Static version/core info (spec §11: included in health/status). */
@@ -198,7 +237,7 @@ export class WalrusdDatabase {
       idempotency_key: options.idempotencyKey,
       statements: options.statements,
     });
-    const deadline = Date.now() + this.defaultDeadlineMs;
+    const deadline = Date.now() + this.defaultWriteDeadlineMs;
     const res = await this.native.write(this.handle, request, deadline);
     return unwrap(res) as WriteResult;
   }
