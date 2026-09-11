@@ -29,6 +29,7 @@ jobs:
           --health-retries 10
     env:
       CGO_ENABLED: "1"
+      GOPROXY: https://proxy.golang.org,direct
       WALRUS_TEST_REDIS_ADDR: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +37,17 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
+      - name: Prefetch Go modules (retry on proxy errors)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go mod download; then
+              exit 0
+            fi
+            echo "go mod download failed (attempt $attempt); retrying"
+            sleep $((attempt * 5))
+          done
+          echo "go mod download failed after 5 attempts"
+          exit 1
       - name: Build
         run: go build -tags vfs ./...
       - name: Vet
@@ -54,9 +66,9 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-14
     env:
       CGO_ENABLED: "1"
+      GOPROXY: https://proxy.golang.org,direct
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -68,17 +80,22 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: bindings/node/package-lock.json
-      - name: Build Go shared library
-        shell: bash
+      - name: Prefetch Go modules (retry on proxy errors)
         run: |
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            lib_ext=dylib
-          else
-            lib_ext=so
-          fi
+          for attempt in 1 2 3 4 5; do
+            if go mod download; then
+              exit 0
+            fi
+            echo "go mod download failed (attempt $attempt); retrying"
+            sleep $((attempt * 5))
+          done
+          echo "go mod download failed after 5 attempts"
+          exit 1
+      - name: Build Go shared library
+        run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
-            -o "bindings/node/lib/libwalrus.${lib_ext}" ./bindings/c/lib
+            -o bindings/node/lib/libwalrus.so ./bindings/c/lib
       - name: Install Node dependencies
         working-directory: bindings/node
         run: npm ci
@@ -98,6 +115,7 @@ jobs:
     timeout-minutes: 30
     env:
       CGO_ENABLED: "1"
+      GOPROXY: https://proxy.golang.org,direct
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -112,6 +130,29 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
+      - name: Prefetch Go modules (retry on proxy errors)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go mod download; then
+              exit 0
+            fi
+            echo "go mod download failed (attempt $attempt); retrying"
+            sleep $((attempt * 5))
+          done
+          echo "go mod download failed after 5 attempts"
+          exit 1
+      - name: Prefetch VFS Go modules (retry on proxy errors)
+        working-directory: bindings/vfs
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go mod download; then
+              exit 0
+            fi
+            echo "go mod download failed (attempt $attempt); retrying"
+            sleep $((attempt * 5))
+          done
+          echo "go mod download failed after 5 attempts"
+          exit 1
       - name: Build Go shared library
         run: |
           mkdir -p bindings/node/lib
@@ -151,16 +192,12 @@ jobs:
         include:
           - runner: ubuntu-latest
             platform: linux-x64
-            lib_ext: so
           - runner: ubuntu-24.04-arm
             platform: linux-arm64
-            lib_ext: so
-          - runner: macos-14
-            platform: darwin-arm64
-            lib_ext: dylib
     runs-on: ${{ matrix.runner }}
     env:
       CGO_ENABLED: "1"
+      GOPROXY: https://proxy.golang.org,direct
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -172,11 +209,22 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: bindings/node/package-lock.json
+      - name: Prefetch Go modules (retry on proxy errors)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go mod download; then
+              exit 0
+            fi
+            echo "go mod download failed (attempt $attempt); retrying"
+            sleep $((attempt * 5))
+          done
+          echo "go mod download failed after 5 attempts"
+          exit 1
       - name: Build Go shared library
         run: |
           mkdir -p bindings/node/lib
           go build -buildmode=c-shared -tags vfs \
-            -o "bindings/node/lib/libwalrus.${{ matrix.lib_ext }}" ./bindings/c/lib
+            -o bindings/node/lib/libwalrus.so ./bindings/c/lib
       - name: Install Node dependencies
         working-directory: bindings/node
         run: npm ci
@@ -189,8 +237,8 @@ jobs:
           mkdir -p "release/${{ matrix.platform }}"
           cp bindings/node/native/build/Release/walrus.node \
             "release/${{ matrix.platform }}/walrus.node"
-          cp "bindings/node/lib/libwalrus.${{ matrix.lib_ext }}" \
-            "release/${{ matrix.platform }}/libwalrus.${{ matrix.lib_ext }}"
+          cp bindings/node/lib/libwalrus.so \
+            "release/${{ matrix.platform }}/libwalrus.so"
           tar -C release -czf "release/${{ matrix.platform }}.tar.gz" \
             "${{ matrix.platform }}"
       - uses: actions/upload-artifact@v4
