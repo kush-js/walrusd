@@ -6,9 +6,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "prebuilds",
-    "native",
-    "lib"
+    "prebuilds"
   ],
   "scripts": {
     "build": "node-gyp rebuild -C native && tsc -p .",

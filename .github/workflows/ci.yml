@@ -246,6 +246,19 @@ jobs:
           name: walrus-${{ matrix.platform }}
           path: release/${{ matrix.platform }}.tar.gz
           if-no-files-found: error
+      - name: Package npm prebuild
+        shell: bash
+        run: |
+          mkdir -p "prebuilds/${{ matrix.platform }}"
+          cp bindings/node/native/build/Release/walrus.node \
+            "prebuilds/${{ matrix.platform }}/walrus.node"
+          cp bindings/node/lib/libwalrus.so \
+            "prebuilds/${{ matrix.platform }}/libwalrus.so"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prebuild-${{ matrix.platform }}
+          path: prebuilds/
+          if-no-files-found: error
 
   release:
     name: Publish GitHub release
@@ -268,3 +281,52 @@ jobs:
           files: |
             release-artifacts/*.tar.gz
             release-artifacts/SHA256SUMS
+
+  publish:
+    name: Publish npm package
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-build
+    runs-on: ubuntu-latest
+    permissions:
+      # Enables npm OIDC trusted publishing if NPM_TOKEN is later removed.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: bindings/node/package-lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: prebuild-*
+          path: bindings/node/prebuilds
+          merge-multiple: true
+      - name: Install Node dependencies
+        working-directory: bindings/node
+        run: npm ci
+      - name: Build TypeScript
+        working-directory: bindings/node
+        run: npx tsc -p .
+      - name: Check whether package version is already published
+        id: published
+        working-directory: bindings/node
+        shell: bash
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${package_name}@${package_version} is already published; skipping npm publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to npm
+        if: steps.published.outputs.published != 'true'
+        working-directory: bindings/node
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

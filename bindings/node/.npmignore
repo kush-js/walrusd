@@ -1,0 +1,16 @@
+# Source and development inputs
+native/**
+lib/**
+src/**
+*.test.mjs
+tsconfig.json
+node_modules/**
+package-lock.json
+
+# Native build intermediates
+native/build/**
+*.o
+.deps/
+*.mk
+*.Makefile
+Makefile
