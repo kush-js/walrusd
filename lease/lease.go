@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"walrusd/identity"
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
 // FormatVersion is the lease record format (spec §7.1).
@@ -171,7 +171,7 @@ func (m *Manager) acquireLocked(ctx context.Context, db identity.DatabaseID, key
 		}
 	}
 	_ = lastErr
-	return nil, walruserr.Busy("lease held by another owner", int64(m.cfg.RetryBackoffMax/time.Millisecond))
+	return nil, walrusderr.Busy("lease held by another owner", int64(m.cfg.RetryBackoffMax/time.Millisecond))
 }
 
 // errRetry signals "reread and retry" (CAS conflict, busy lease, lost race).
@@ -185,14 +185,14 @@ func (m *Manager) acquireOnce(ctx context.Context, db identity.DatabaseID, key s
 		return m.create(ctx, key, rec)
 	}
 	if err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassRemoteUnavailable, "read lease", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "read lease", err)
 	}
 	var rec Record
 	if err := json.Unmarshal(body, &rec); err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassConfigurationInvalid, "corrupt lease record", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassConfigurationInvalid, "corrupt lease record", err)
 	}
 	if rec.DatabaseID != db.String() {
-		return nil, walruserr.New(walruserr.ClassConfigurationInvalid, "lease record database_id mismatch")
+		return nil, walrusderr.New(walrusderr.ClassConfigurationInvalid, "lease record database_id mismatch")
 	}
 
 	now := m.cfg.now()
@@ -231,7 +231,7 @@ func (m *Manager) create(ctx context.Context, key string, rec Record) (*Held, er
 		return nil, fmt.Errorf("%w: lost create race", errRetry)
 	}
 	if err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassRemoteUnavailable, "create lease", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "create lease", err)
 	}
 	return &Held{Record: rec, Version: version, key: key}, nil
 }
@@ -247,7 +247,7 @@ func (m *Manager) replace(ctx context.Context, key, expectedVersion string, rec 
 		return nil, fmt.Errorf("%w: CAS conflict on acquire", errRetry)
 	}
 	if err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassRemoteUnavailable, "replace lease", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "replace lease", err)
 	}
 	return &Held{Record: rec, Version: version, key: key}, nil
 }
@@ -270,10 +270,10 @@ func (m *Manager) Release(ctx context.Context, held *Held) error {
 	}
 	_, err = m.store.ReplaceIfToken(ctx, held.key, held.Version, body)
 	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
-		return walruserr.New(walruserr.ClassLeaseConflict, "stale lease release (successor owns lease)")
+		return walrusderr.New(walrusderr.ClassLeaseConflict, "stale lease release (successor owns lease)")
 	}
 	if err != nil {
-		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "release lease", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "release lease", err)
 	}
 	return nil
 }

@@ -10,7 +10,7 @@ import (
 
 	"walrusd/identity"
 	"walrusd/lease"
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
 func newManager(t *testing.T, mutate func(*lease.Config)) (*lease.Manager, *lease.MemoryStore) {
@@ -64,17 +64,17 @@ func TestAcquireBusyWhileHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := m.Acquire(context.Background(), d)
-	if walruserr.ClassOf(err) != walruserr.ClassBusy {
+	if walrusderr.ClassOf(err) != walrusderr.ClassBusy {
 		t.Fatalf("class = %v, want DB_BUSY", err)
 	}
-	var hint walruserr.RetryAfterHint
+	var hint walrusderr.RetryAfterHint
 	if ok := asHint(err, &hint); !ok {
 		t.Fatal("expected Retry-After hint")
 	}
 }
 
-func asHint(err error, target *walruserr.RetryAfterHint) bool {
-	e, ok := err.(walruserr.RetryAfterHint)
+func asHint(err error, target *walrusderr.RetryAfterHint) bool {
+	e, ok := err.(walrusderr.RetryAfterHint)
 	if ok {
 		*target = e
 	}
@@ -113,7 +113,7 @@ func TestAcquireTakeoverAfterExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Still held: busy.
-	if _, err := m.Acquire(context.Background(), d); walruserr.ClassOf(err) != walruserr.ClassBusy {
+	if _, err := m.Acquire(context.Background(), d); walrusderr.ClassOf(err) != walrusderr.ClassBusy {
 		t.Fatalf("expected busy, got %v", err)
 	}
 	// Advance past expiry + skew: takeover succeeds with epoch bump.
@@ -162,7 +162,7 @@ func TestStaleReleaseConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("successor acquire: %v", err)
 	}
-	if err := m.Release(context.Background(), held); walruserr.ClassOf(err) != walruserr.ClassLeaseConflict {
+	if err := m.Release(context.Background(), held); walrusderr.ClassOf(err) != walrusderr.ClassLeaseConflict {
 		t.Fatalf("stale release class = %v, want DB_LEASE_CONFLICT", err)
 	}
 	if err := m.Release(context.Background(), other); err != nil {

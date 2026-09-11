@@ -1,7 +1,7 @@
-// Package walruserr defines the classified error model (spec §11). Every
+// Package walrusderr defines the classified error model (spec §11). Every
 // error surfaced by the runtime maps to exactly one class so callers and
 // bindings can make retry decisions without string matching.
-package walruserr
+package walrusderr
 
 import "errors"
 

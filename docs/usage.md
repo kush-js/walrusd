@@ -175,7 +175,7 @@ Rules the runtime enforces:
 
 ### Errors and retry
 
-All errors are classified (`walruserr`); match on `Class`, not on strings
+All errors are classified (`walrusderr`); match on `Class`, not on strings
 (spec §11):
 
 | Class | Meaning | What to do |
@@ -191,7 +191,7 @@ All errors are classified (`walruserr`); match on `Class`, not on strings
 
 ```go
 _, err := rt.WithWrite(ctx, d, key, fn)
-if walruserr.ClassOf(err) == walruserr.ClassFlushFailed {
+if walrusderr.ClassOf(err) == walrusderr.ClassFlushFailed {
     // safe: retry with the same idempotency key
 }
 ```

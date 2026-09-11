@@ -192,6 +192,6 @@ pointing `WALRUSD_TEST_FILE_ROOT` at a temp dir).
 | `lease/` | Redis/Valkey + memory lease stores, CAS acquire/release, expiry takeover, single-flight |
 | `litestream/` | Bridge to Litestream's CGO VFS: replica clients, flush barrier |
 | `runtime/` | `WithRead`/`WithWrite`: lease → transaction → flush → release, idempotency |
-| `walruserr/` | Classified `DB_*` error model |
+| `walrusderr/` | Classified `DB_*` error model |
 | `bindings/c/` | Narrow C ABI over the core (JSON envelopes) |
 | `bindings/node/` | Node-API addon + `@walrusd/db` TypeScript wrapper |

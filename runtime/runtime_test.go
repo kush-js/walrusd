@@ -12,10 +12,10 @@ import (
 	"walrusd/lease"
 	"walrusd/litestream"
 	"walrusd/runtime"
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
-func class(err error) string { return string(walruserr.ClassOf(err)) }
+func class(err error) string { return string(walrusderr.ClassOf(err)) }
 
 func newTestRuntime(t *testing.T, owner string) *runtime.Runtime {
 	t.Helper()

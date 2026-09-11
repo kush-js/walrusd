@@ -18,7 +18,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
 // ProtocolVersion is the envelope protocol version. Additive changes only
@@ -171,11 +171,11 @@ func errEnvelope(e errPayload) []byte {
 }
 
 func errEnvelopeFromClassified(err error) []byte {
-	e := errPayload{Class: string(walruserr.ClassOf(err)), Message: err.Error()}
+	e := errPayload{Class: string(walrusderr.ClassOf(err)), Message: err.Error()}
 	if e.Class == "" {
-		e.Class = string(walruserr.ClassRemoteUnavailable)
+		e.Class = string(walrusderr.ClassRemoteUnavailable)
 	}
-	if hint, ok := err.(walruserr.RetryAfterHint); ok {
+	if hint, ok := err.(walrusderr.RetryAfterHint); ok {
 		if ms, ok := hint.RetryAfter(); ok {
 			e.RetryAfterMs = ms
 		}

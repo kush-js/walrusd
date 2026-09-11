@@ -12,7 +12,7 @@ import (
 	"walrusd/lease"
 	"walrusd/litestream"
 	"walrusd/runtime"
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
 // Adapter adapts the Go runtime.Runtime to the byte-envelope ABI.
@@ -99,7 +99,7 @@ type ReadResult struct {
 func (a *Adapter) WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	var r WriteRequest
 	if err := json.Unmarshal(req, &r); err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassInvalidArgument, "decode write request", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "decode write request", err)
 	}
 	cctx, cancel := ctx.context()
 	defer cancel()
@@ -123,7 +123,7 @@ func (a *Adapter) WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error) {
 func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	var r ReadRequest
 	if err := json.Unmarshal(req, &r); err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassInvalidArgument, "decode read request", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "decode read request", err)
 	}
 	cctx, cancel := ctx.context()
 	defer cancel()
@@ -178,14 +178,14 @@ func (a *Adapter) Close() error { return a.rt.Close() }
 func (a *Adapter) ReadDSNBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	var r ReadDSNRequest
 	if err := json.Unmarshal(req, &r); err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassInvalidArgument, "decode read_dsn request", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "decode read_dsn request", err)
 	}
 	cctx, cancel := ctx.context()
 	defer cancel()
 	d := ddescriptor(r.Descriptor)
 	dbID, err := d.Identity()
 	if err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
 	dsn, err := a.rt.ReadDSN(cctx, d)
 	if err != nil {

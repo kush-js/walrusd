@@ -15,7 +15,7 @@ import (
 	"walrusd/lease"
 	"walrusd/litestream"
 	"walrusd/observability"
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
 // Config is the runtime configuration (spec §16).
@@ -105,11 +105,11 @@ func (s *cachedReadSession) run(ctx context.Context, fn func(*sql.Conn) error) e
 // object storage needs no conditional-write support.
 func New(store lease.Store, owner string, cfg Config) (*Runtime, error) {
 	if !cfg.RequireFlushBeforeRelease {
-		return nil, walruserr.New(walruserr.ClassConfigurationInvalid,
+		return nil, walrusderr.New(walrusderr.ClassConfigurationInvalid,
 			"require_flush_before_release must be true")
 	}
 	if cfg.Lease.Duration <= cfg.ClockSkew()+cfg.RequestTimeout {
-		return nil, walruserr.New(walruserr.ClassConfigurationInvalid,
+		return nil, walrusderr.New(walrusderr.ClassConfigurationInvalid,
 			"lease duration must exceed request timeout + flush time + skew allowance")
 	}
 	lsCfg := cfg.Litestream
@@ -172,7 +172,7 @@ func (r *Runtime) readInstanceRemoved(inst cache.ReadInstance) {
 func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*litestream.Database, error) {
 	keyID, secret, err := d.Credentials.AccessKey()
 	if err != nil {
-		return nil, walruserr.Wrap(walruserr.ClassConfigurationInvalid, "resolve credentials", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassConfigurationInvalid, "resolve credentials", err)
 	}
 	profile := d.Storage
 	profile.AccessKeyID = keyID
@@ -181,7 +181,7 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return nil, walruserr.New(walruserr.ClassRemoteUnavailable, "runtime is closed")
+		return nil, walrusderr.New(walrusderr.ClassRemoteUnavailable, "runtime is closed")
 	}
 	// Key by identity AND storage profile: same database_id against a
 	// different bucket/prefix/endpoint/file-root is a different replica.
@@ -198,7 +198,7 @@ func (r *Runtime) database(d DatabaseDescriptor, db identity.DatabaseID) (*lites
 	vfs, err := r.bridge.RegisterDatabase(key, db.ReplicaPrefix(profile.RootPrefix), profile)
 	if err != nil {
 		r.mu.Unlock()
-		return nil, walruserr.Wrap(walruserr.ClassConfigurationInvalid, "register vfs", err)
+		return nil, walrusderr.Wrap(walrusderr.ClassConfigurationInvalid, "register vfs", err)
 	}
 	el := r.dbOrder.PushFront(&databaseEntry{key: key, vfs: vfs})
 	r.dbs[key] = el
@@ -258,7 +258,7 @@ func (r *Runtime) Close() error {
 func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, error) {
 	db, err := d.Identity()
 	if err != nil {
-		return "", walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
+		return "", walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
 	vfs, err := r.database(d, db)
 	if err != nil {
@@ -270,7 +270,7 @@ func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, er
 func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*sql.Conn) error) (err error) {
 	db, err := d.Identity()
 	if err != nil {
-		return walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
+		return walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
 	metricsID := db.String()
 	defer func() {
@@ -312,14 +312,14 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	// definition, so serve fn an empty query-only connection instead.
 	has, err := vfs.HasLTX(ctx)
 	if err != nil {
-		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "probe replica", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "probe replica", err)
 	}
 	if !has {
 		return withEmptyRead(ctx, fn)
 	}
 	session, err := vfs.OpenRead(ctx, db.ID)
 	if err != nil {
-		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open read session", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open read session", err)
 	}
 	r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadOpens++ })
 	cached := newCachedReadSession(session, metricsID)
@@ -337,17 +337,17 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 func withEmptyRead(ctx context.Context, fn func(*sql.Conn) error) error {
 	mem, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
-		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open empty read session", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open empty read session", err)
 	}
 	defer mem.Close()
 	mem.SetMaxOpenConns(1)
 	conn, err := mem.Conn(ctx)
 	if err != nil {
-		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open empty read session", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open empty read session", err)
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, `PRAGMA query_only=ON`); err != nil {
-		return walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open empty read session", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open empty read session", err)
 	}
 	return fn(conn)
 }
@@ -373,14 +373,14 @@ type WriteResult struct {
 func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempotencyKey string, fn func(*sql.Conn) error) (WriteResult, error) {
 	var zero WriteResult
 	if idempotencyKey == "" {
-		return zero, walruserr.New(walruserr.ClassInvalidArgument, "idempotency key is required for mutations")
+		return zero, walrusderr.New(walrusderr.ClassInvalidArgument, "idempotency key is required for mutations")
 	}
 	if fn == nil {
-		return zero, walruserr.New(walruserr.ClassInvalidArgument, "write callback is required")
+		return zero, walrusderr.New(walrusderr.ClassInvalidArgument, "write callback is required")
 	}
 	db, err := d.Identity()
 	if err != nil {
-		return zero, walruserr.Wrap(walruserr.ClassInvalidArgument, "database id", err)
+		return zero, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
 	vfs, err := r.database(d, db)
 	if err != nil {
@@ -397,11 +397,11 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	// 1. Conditionally acquire the lease (spec §7.2).
 	held, err := r.leases.Acquire(ctx, db, d.Storage.RootPrefix)
 	if err != nil {
-		cls := walruserr.ClassOf(err)
+		cls := walrusderr.ClassOf(err)
 		r.metrics.Record(dbKey, func(m *observability.Metrics) {
-			if cls == walruserr.ClassBusy {
+			if cls == walrusderr.ClassBusy {
 				m.LeaseBusyRetries++
-			} else if cls == walruserr.ClassLeaseConflict {
+			} else if cls == walrusderr.ClassLeaseConflict {
 				m.LeaseCASConflicts++
 			}
 		})
@@ -415,7 +415,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	// to expire on failure paths that cannot safely release (spec §8).
 	session, err := vfs.OpenWrite(ctx, db.ID)
 	if err != nil {
-		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassRemoteUnavailable, "open write session", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open write session", err))
 	}
 	// Cleanup uses a non-cancelled context so ROLLBACK runs even when the
 	// request deadline fired mid-transaction.
@@ -428,7 +428,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	// must not manage transactions themselves.
 	if _, err := session.Exec(ctx, `BEGIN IMMEDIATE`); err != nil {
 		session.Close()
-		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "begin write transaction", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassConflict, "begin write transaction", err))
 	}
 	var result WriteResult
 	// Idempotency check (spec §8): a retry with the same key returns the
@@ -460,16 +460,16 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactionFailures++ })
 		session.Close()
 		if isNestedTxError(err) {
-			return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassInvalidArgument, "write callback must not manage transactions (no BEGIN/COMMIT inside fn)", err))
+			return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "write callback must not manage transactions (no BEGIN/COMMIT inside fn)", err))
 		}
-		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "transaction failed", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassConflict, "transaction failed", err))
 	}
 	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactions++ })
 	nextTXID, err := session.NextTXID()
 	if err != nil {
 		rollback()
 		session.Close()
-		return zero, r.failWithLease(ctx, held, walruserr.Wrap(walruserr.ClassConflict, "compute next txid", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassConflict, "compute next txid", err))
 	}
 	if err := session.Run(ctx, func(conn *sql.Conn) error {
 		return recordIdempotent(ctx, conn, idempotencyKey, nextTXID)
@@ -486,20 +486,20 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		rollback()
 		session.Close()
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleaseConflicts++ })
-		return zero, walruserr.New(walruserr.ClassLeaseConflict, "lease expired before flush; transaction rolled back, retry with the same idempotency key")
+		return zero, walrusderr.New(walrusderr.ClassLeaseConflict, "lease expired before flush; transaction rolled back, retry with the same idempotency key")
 	}
 	if _, err := session.Exec(ctx, `COMMIT`); err != nil {
 		rollback()
 		session.Close()
 		// COMMIT may have partially reached storage: ambiguous like a
 		// flush failure — never ack, leave lease to expire.
-		return zero, r.flushFailure(ctx, held, walruserr.Wrap(walruserr.ClassFlushFailed, "commit not confirmed", err))
+		return zero, r.flushFailure(ctx, held, walrusderr.Wrap(walrusderr.ClassFlushFailed, "commit not confirmed", err))
 	}
 	// 4. Disable write mode = the mandatory synchronous flush barrier.
 	flushStart := time.Now()
 	if err := session.DisableWrite(); err != nil {
 		r.metrics.Record(dbKey, func(m *observability.Metrics) {
-			if walruserr.ClassOf(err) == walruserr.ClassConflict {
+			if walrusderr.ClassOf(err) == walrusderr.ClassConflict {
 				m.FlushConflictErrors++
 			}
 			m.FlushFailures++
@@ -518,11 +518,11 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	txid, txidErr := session.TXID()
 	if txidErr != nil {
 		session.Close()
-		return zero, walruserr.Wrap(walruserr.ClassFlushFailed, "read txid after flush", txidErr)
+		return zero, walrusderr.Wrap(walrusderr.ClassFlushFailed, "read txid after flush", txidErr)
 	}
 	if txid != nextTXID {
 		session.Close()
-		return zero, walruserr.New(walruserr.ClassFlushFailed,
+		return zero, walrusderr.New(walrusderr.ClassFlushFailed,
 			fmt.Sprintf("flushed txid %s does not match recorded txid %s", txid, nextTXID))
 	}
 	result.TXID = txid
@@ -531,7 +531,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 	r.reads.Evict(vfs.Key)
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
-		if walruserr.ClassOf(err) == walruserr.ClassLeaseConflict {
+		if walrusderr.ClassOf(err) == walrusderr.ClassLeaseConflict {
 			r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleaseConflicts++ })
 		}
 		session.Close()
@@ -573,8 +573,8 @@ func (r *Runtime) failWithLease(ctx context.Context, held *lease.Held, cause err
 // flushFailure maps a failed flush barrier to DB_FLUSH_FAILED and leaves the
 // lease to expire (spec §12: "Flush fails" row).
 func (r *Runtime) flushFailure(_ context.Context, _ *lease.Held, cause error) error {
-	if walruserr.ClassOf(cause) == walruserr.ClassConflict {
-		return walruserr.Wrap(walruserr.ClassConflict, "litestream writer conflict during flush", cause)
+	if walrusderr.ClassOf(cause) == walrusderr.ClassConflict {
+		return walrusderr.Wrap(walrusderr.ClassConflict, "litestream writer conflict during flush", cause)
 	}
-	return walruserr.Wrap(walruserr.ClassFlushFailed, "remote LTX flush not confirmed", cause)
+	return walrusderr.Wrap(walrusderr.ClassFlushFailed, "remote LTX flush not confirmed", cause)
 }

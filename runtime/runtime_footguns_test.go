@@ -10,7 +10,7 @@ import (
 	"walrusd/lease"
 	"walrusd/litestream"
 	"walrusd/runtime"
-	"walrusd/walruserr"
+	"walrusd/walrusderr"
 )
 
 // footgunRuntime builds a runtime with caller-supplied timing for
@@ -82,7 +82,7 @@ func TestFootgunNestedTransactionRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected nested BEGIN to be rejected")
 	}
-	if got := walruserr.ClassOf(err); got != walruserr.ClassInvalidArgument {
+	if got := walrusderr.ClassOf(err); got != walrusderr.ClassInvalidArgument {
 		t.Fatalf("class = %q, want DB_INVALID_ARGUMENT", got)
 	}
 }
