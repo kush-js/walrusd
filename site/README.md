@@ -25,6 +25,13 @@ ignored `src/content/docs/docs/` directory, moves each document's H1 into
 Starlight frontmatter, adds a source edit URL, and creates the `/docs/` hub
 from the parsed document titles and descriptions.
 
+Documentation can group per-language code fences in a `:::variants` region.
+The sync script validates the region and turns it into Starlight's
+JavaScript-synchronized tabs. Every variant group uses the `runtime` sync key,
+so choosing a language updates every example on the page and remembers the
+choice across navigation. Without JavaScript, Starlight renders the first tab
+panel, which is always Go for these examples.
+
 ## Build
 
 ```sh

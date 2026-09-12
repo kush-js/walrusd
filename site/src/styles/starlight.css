@@ -250,6 +250,57 @@ main .expressive-code figure {
   background: var(--bg-elevated);
 }
 
+main starlight-tabs {
+  display: block;
+  margin: 1.5rem 0;
+}
+
+main starlight-tabs .tablist-wrapper {
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--surface);
+}
+
+main starlight-tabs [role="tablist"] {
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0.35rem 0.35rem 0;
+}
+
+main starlight-tabs .tab > [role="tab"] {
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-shadow: none;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0;
+}
+
+main starlight-tabs .tab > [role="tab"]:hover {
+  color: var(--fg);
+  background: var(--accent-glow);
+}
+
+main starlight-tabs .tab > [role="tab"][aria-selected="true"] {
+  border-color: var(--border);
+  color: var(--accent-bright);
+  background: var(--accent-glow);
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+main starlight-tabs [role="tabpanel"] {
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-elevated);
+}
+
+main starlight-tabs [role="tabpanel"] > .expressive-code:first-child {
+  margin-top: 0;
+}
+
 main table {
   border-color: var(--border);
   font-variant-numeric: tabular-nums;
