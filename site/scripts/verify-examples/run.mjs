@@ -17,21 +17,39 @@ const npmBin = process.env.NPM?.trim() || "npm";
 const cCompiler = process.env.CC?.trim() || "cc";
 
 const languages = [
-  { language: "go", label: "Go", harness: path.join(scriptDir, "go", "main.go") },
+  {
+    language: "go",
+    label: "Go",
+    harness: [
+      path.join(scriptDir, "go", "main.go"),
+      path.join(scriptDir, "go", "verify.go"),
+    ],
+  },
   {
     language: "ts",
     label: "Node.js / Bun",
-    harness: path.join(scriptDir, "node", "index.ts"),
+    harness: [path.join(scriptDir, "node", "index.ts")],
   },
-  { language: "c", label: "C ABI", harness: path.join(scriptDir, "c", "main.c") },
+  {
+    language: "c",
+    label: "C ABI",
+    harness: [path.join(scriptDir, "c", "main.c")],
+  },
   {
     language: "python",
     label: "Python (C ABI)",
-    harness: path.join(scriptDir, "python", "main.py"),
+    harness: [path.join(scriptDir, "python", "main.py")],
   },
 ];
 
 const preferredDocs = ["usage.md", "specs.md"];
+const expectedUsageSections = [
+  "Create a runtime",
+  "Describe a database",
+  "Read",
+  "Write",
+  "Errors and retry",
+];
 
 function normalize(value) {
   return `${value
@@ -71,6 +89,7 @@ async function extractSnippets() {
       return left.localeCompare(right);
     });
   const snippets = new Map(languages.map(({ language }) => [language, []]));
+  const regions = [];
 
   for (const source of sourceFiles) {
     const lines = (await fs.readFile(path.join(docsDir, source), "utf8")).split(
@@ -78,21 +97,46 @@ async function extractSnippets() {
     );
     let inVariant = false;
     let regionStart = -1;
+    let region = null;
+    let section = "";
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
+      const sectionMatch = line.match(/^###\s+(.+?)\s*$/);
+      if (!inVariant && sectionMatch) {
+        section = sectionMatch[1];
+      }
       if (line === ":::variants") {
         if (inVariant) {
           throw new Error(`${source}:${index + 1}: nested :::variants region`);
         }
         inVariant = true;
         regionStart = index;
+        region = {
+          source: `${source}:${index + 1}`,
+          section,
+          snippets: new Map(),
+        };
         continue;
       }
 
       if (!inVariant) continue;
       if (line === ":::") {
+        for (const { language, label } of languages) {
+          if (!region.snippets.has(language)) {
+            throw new Error(
+              `${source}:${regionStart + 1}: ${region.section || "(untitled section)"} is missing the ${label} variant`,
+            );
+          }
+        }
+        if (region.snippets.keys().next().value !== "go") {
+          throw new Error(
+            `${source}:${regionStart + 1}: ${region.section || "(untitled section)"} must start with the Go variant`,
+          );
+        }
+        regions.push(region);
         inVariant = false;
+        region = null;
         continue;
       }
       if (line.trim() === "") continue;
@@ -106,6 +150,14 @@ async function extractSnippets() {
       if (!snippets.has(openingFence.language)) {
         throw new Error(
           `${source}:${index + 1}: unknown variant language ${JSON.stringify(openingFence.language)}`,
+        );
+      }
+      if (region.snippets.has(openingFence.language)) {
+        const { label } = languages.find(
+          ({ language }) => language === openingFence.language,
+        );
+        throw new Error(
+          `${source}:${index + 1}: ${region.section || "(untitled section)"} has more than one ${label} variant`,
         );
       }
 
@@ -125,10 +177,14 @@ async function extractSnippets() {
         );
       }
 
-      snippets.get(openingFence.language).push({
+      const snippet = {
         source: `${source}:${regionStart + 1}`,
+        section: region.section,
+        language: openingFence.language,
         text: normalize(blockLines.slice(1, -1).join("\n")),
-      });
+      };
+      region.snippets.set(openingFence.language, snippet);
+      snippets.get(openingFence.language).push(snippet);
     }
 
     if (inVariant) {
@@ -138,14 +194,58 @@ async function extractSnippets() {
     }
   }
 
-  return snippets;
+  const usageRegions = regions.filter(({ source }) =>
+    source.startsWith("usage.md:"),
+  );
+  const usageSections = new Set(usageRegions.map(({ section }) => section));
+  if (
+    usageRegions.length !== expectedUsageSections.length ||
+    usageSections.size !== expectedUsageSections.length
+  ) {
+    throw new Error(
+      `usage.md must have exactly ${expectedUsageSections.length} distinct variant sections; found ${usageRegions.length} region(s) in ${usageSections.size} section(s)`,
+    );
+  }
+  for (const section of expectedUsageSections) {
+    if (!usageSections.has(section)) {
+      throw new Error(`usage.md is missing the variant region for ${section}`);
+    }
+  }
+
+  return { snippets, regions };
 }
 
-function assertSnippets(harnessPath, snippets) {
-  if (!existsSync(harnessPath)) {
-    throw new Error(`missing example harness: ${harnessPath}`);
+function renderSnippetDiff(harnessLabel, harness, cursor, snippet) {
+  const expectedLines = snippet.text.trimEnd().split("\n");
+  const firstLine = expectedLines.find((line) => line.trim() !== "");
+  const found = firstLine === undefined ? -1 : harness.indexOf(firstLine, cursor);
+  const actualStart = found === -1 ? cursor : found;
+  const lineNumber = harness.slice(0, actualStart).split("\n").length;
+  const actualLines = harness
+    .slice(actualStart)
+    .split("\n")
+    .slice(0, Math.max(expectedLines.length, 5));
+
+  return [
+    `--- expected ${snippet.source}`,
+    ...expectedLines.map((line) => `- ${line}`),
+    `+++ ${harnessLabel} at or after line ${lineNumber}`,
+    ...actualLines.map((line) => `+ ${line}`),
+  ].join("\n");
+}
+
+function assertSnippets(harnessPaths, snippets) {
+  for (const harnessPath of harnessPaths) {
+    if (!existsSync(harnessPath)) {
+      throw new Error(`missing example harness: ${harnessPath}`);
+    }
   }
-  const harness = normalize(readFileSync(harnessPath, "utf8"));
+  const harnessLabel = harnessPaths
+    .map((file) => path.relative(repoDir, file))
+    .join(" + ");
+  const harness = normalize(
+    harnessPaths.map((harnessPath) => readFileSync(harnessPath, "utf8")).join("\n"),
+  );
   let cursor = 0;
 
   for (const snippet of snippets) {
@@ -153,10 +253,9 @@ function assertSnippets(harnessPath, snippets) {
     if (position === -1) {
       throw new Error(
         [
-          `${path.relative(repoDir, harnessPath)} is missing or reorders a snippet from ${snippet.source}.`,
+          `${harnessLabel} is missing or reorders the ${snippet.section} snippet from ${snippet.source}.`,
           "",
-          "Expected verbatim block:",
-          snippet.text.trimEnd(),
+          renderSnippetDiff(harnessLabel, harness, cursor, snippet),
         ].join("\n"),
       );
     }
@@ -188,14 +287,19 @@ function run(label, command, args, options = {}) {
     throw new Error(`${label} failed to start: ${result.error.message}`);
   }
   if (result.status !== 0) {
-    throw new Error(`${label} exited with status ${result.status}`);
+    const details = [result.stderr?.trim(), result.stdout?.trim()]
+      .filter(Boolean)
+      .join("\n");
+    throw new Error(
+      `${label} exited with status ${result.status}${details ? `\n${details}` : ""}`,
+    );
   }
   return result.stdout ?? "";
 }
 
 function assertOutput(language, label, output) {
   const expected = {
-    go: /^Go durable at txid \S+\nGo read: hello from walrusd$/m,
+    go: /^Go durable at txid \S+\nGo read: hello$/m,
     ts: /^Node\.js \/ Bun durable at txid \S+\nNode\.js \/ Bun read: hello from walrusd$/m,
     c: /^C ABI durable at txid \S+\nC ABI read: hello from walrusd$/m,
     python:
@@ -395,7 +499,12 @@ async function runPython(root, sharedLibrary) {
 }
 
 async function main() {
-  const snippets = await extractSnippets();
+  const { snippets, regions } = await extractSnippets();
+  console.log(
+    `[verify-examples] checking ${regions.length} variant region(s): ${regions
+      .map(({ section }) => section)
+      .join(", ")}`,
+  );
   for (const { language, harness } of languages) {
     assertSnippets(harness, snippets.get(language));
   }
