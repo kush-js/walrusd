@@ -91,11 +91,11 @@ to `const darkOnly = false;`.
 
 ## Design system
 
-The site's visual language is ported from the author's other site,
-[basemnt.ai](https://basemnt.ai). This includes the palette, type scale, and
-the mono-label, HUD, and iso-plate motifs. Palette values and corner
-radii live as custom properties in
-`src/styles/starlight.css`; the landing page consumes those same tokens.
+The site's layout, type scale, and HUD/ticker-free motifs are inspired by the
+author's other site, [basemnt.ai](https://basemnt.ai), but the palette is
+walrusd's own navy blue and is maintained as the token block in
+`src/styles/starlight.css`. Corner radii live alongside those palette tokens;
+the landing page consumes the same tokens.
 Fonts are deliberately self-hosted through the `@fontsource/*` packages, and
 this build must not make remote font or CDN requests.
 

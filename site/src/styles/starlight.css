@@ -14,22 +14,22 @@
 :root,
 :root[data-theme="light"] {
   color-scheme: dark;
-  --bg: #000000;
-  --bg-elevated: #070a08;
-  --surface: #0a0d0b;
-  --fg: #e9edea;
-  --fg-body: #c2c9c3;
-  --fg-muted: #8b948e;
-  --fg-dim: #4e5651;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.16);
-  --accent-green: #34d399;
-  --accent-green-deep: #10b981;
-  --accent-green-bright: #8df5c6;
+  --bg: #060b1c;
+  --bg-elevated: #0a1226;
+  --surface: #0d1830;
+  --fg: #e7edf9;
+  --fg-body: #c2cee4;
+  --fg-muted: #8b9ab8;
+  --fg-dim: #5a6883;
+  --border: rgba(150, 180, 235, 0.14);
+  --border-hover: rgba(150, 180, 235, 0.28);
+  --accent: #4d9bff;
+  --accent-deep: #3b82f6;
+  --accent-bright: #a9cdff;
+  --accent-glow: rgba(77, 155, 255, 0.16);
+  --accent-dim: rgba(77, 155, 255, 0.42);
   --accent-red: #ef4444;
   --accent-yellow: #f59e0b;
-  --green-glow: rgba(52, 211, 153, 0.14);
-  --green-dim: rgba(52, 211, 153, 0.35);
   --radius: 6px;
   --radius-sm: 3px;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -48,37 +48,41 @@
   --sl-color-gray-7: var(--bg-elevated);
   --sl-color-black: var(--bg);
 
-  --sl-color-orange-low: rgba(245, 158, 11, 0.12);
+  --sl-color-orange-low: color-mix(
+    in srgb,
+    var(--accent-yellow) 12%,
+    transparent
+  );
   --sl-color-orange: var(--accent-yellow);
   --sl-color-orange-high: var(--accent-yellow);
-  --sl-color-green-low: var(--green-glow);
-  --sl-color-green: var(--accent-green);
-  --sl-color-green-high: var(--accent-green-bright);
-  --sl-color-blue-low: var(--green-glow);
-  --sl-color-blue: var(--accent-green-deep);
-  --sl-color-blue-high: var(--accent-green-bright);
-  --sl-color-purple-low: var(--green-glow);
-  --sl-color-purple: var(--accent-green);
-  --sl-color-purple-high: var(--accent-green-bright);
-  --sl-color-red-low: rgba(239, 68, 68, 0.12);
+  --sl-color-green-low: var(--accent-glow);
+  --sl-color-green: var(--accent);
+  --sl-color-green-high: var(--accent-bright);
+  --sl-color-blue-low: var(--accent-glow);
+  --sl-color-blue: var(--accent-deep);
+  --sl-color-blue-high: var(--accent-bright);
+  --sl-color-purple-low: var(--accent-glow);
+  --sl-color-purple: var(--accent);
+  --sl-color-purple-high: var(--accent-bright);
+  --sl-color-red-low: color-mix(in srgb, var(--accent-red) 12%, transparent);
   --sl-color-red: var(--accent-red);
-  --sl-color-red-high: #fca5a5;
+  --sl-color-red-high: var(--accent-red);
 
-  --sl-color-accent-low: var(--green-glow);
-  --sl-color-accent: var(--accent-green);
-  --sl-color-accent-high: var(--accent-green-bright);
+  --sl-color-accent-low: var(--accent-glow);
+  --sl-color-accent: var(--accent);
+  --sl-color-accent-high: var(--accent-bright);
   --sl-color-text: var(--fg-body);
-  --sl-color-text-accent: var(--accent-green-bright);
-  --sl-color-text-invert: #000000;
+  --sl-color-text-accent: var(--accent-bright);
+  --sl-color-text-invert: #05091a;
   --sl-color-bg: var(--bg);
-  --sl-color-bg-nav: rgba(0, 0, 0, 0.82);
+  --sl-color-bg-nav: rgba(6, 11, 28, 0.82);
   --sl-color-bg-sidebar: var(--bg-elevated);
   --sl-color-bg-inline-code: var(--surface);
-  --sl-color-bg-accent: var(--accent-green);
+  --sl-color-bg-accent: var(--accent);
   --sl-color-hairline-light: var(--border-hover);
   --sl-color-hairline: var(--border);
   --sl-color-hairline-shade: var(--bg);
-  --sl-color-backdrop-overlay: rgba(0, 0, 0, 0.72);
+  --sl-color-backdrop-overlay: rgba(6, 11, 28, 0.72);
 
   --sl-font: var(--font-sans);
   --sl-font-mono: var(--font-mono);
@@ -96,12 +100,12 @@ body {
 }
 
 ::selection {
-  color: #000000;
-  background: var(--accent-green);
+  color: #05091a;
+  background: var(--accent);
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-green);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -117,7 +121,7 @@ body:has(.landing)::after {
 
 .header {
   border-color: var(--border);
-  background: rgba(0, 0, 0, 0.82);
+  background: rgba(6, 11, 28, 0.82);
   backdrop-filter: blur(12px);
 }
 
@@ -130,7 +134,7 @@ body:has(.landing)::after {
 }
 
 .site-title:hover {
-  color: var(--accent-green);
+  color: var(--accent);
 }
 
 .social-icons::after {
@@ -173,8 +177,8 @@ starlight-toc a,
 
 .sidebar-content a:hover,
 .sidebar-content a:focus {
-  color: var(--accent-green);
-  background: var(--green-glow);
+  color: var(--accent);
+  background: var(--accent-glow);
 }
 
 .sidebar-content [aria-current="page"],
@@ -182,7 +186,7 @@ starlight-toc a,
 .sidebar-content [aria-current="page"]:focus {
   color: var(--fg);
   background: var(--surface);
-  box-shadow: inset 2px 0 var(--accent-green);
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 main h1,
@@ -221,14 +225,14 @@ main strong {
 }
 
 main a {
-  color: var(--accent-green-bright);
-  text-decoration-color: var(--green-dim);
+  color: var(--accent-bright);
+  text-decoration-color: var(--accent-dim);
   text-underline-offset: 0.2em;
 }
 
 main a:hover {
-  color: var(--accent-green);
-  text-decoration-color: var(--accent-green);
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 
 main :not(pre) > code {
@@ -266,9 +270,9 @@ main tr:nth-child(2n) {
 }
 
 main blockquote {
-  border-color: var(--green-dim);
+  border-color: var(--accent-dim);
   color: var(--fg-muted);
-  background: var(--green-glow);
+  background: var(--accent-glow);
 }
 
 main aside {
@@ -293,7 +297,7 @@ starlight-toc a {
 
 starlight-toc a:hover,
 starlight-toc a[aria-current="true"] {
-  color: var(--accent-green);
+  color: var(--accent);
 }
 
 .pagination-links a {
@@ -303,7 +307,7 @@ starlight-toc a[aria-current="true"] {
 }
 
 .pagination-links a:hover {
-  border-color: var(--green-dim);
+  border-color: var(--accent-dim);
 }
 
 .pagination-links .link-title {
