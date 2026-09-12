@@ -9,6 +9,7 @@
     "dev": "astro dev",
     "prebuild": "npm run sync-docs",
     "build": "astro build",
+    "verify:examples": "node scripts/verify-examples/run.mjs",
     "preview": "astro preview"
   },
   "engines": {
