@@ -18,6 +18,7 @@
   --bg-elevated: #070a08;
   --surface: #0a0d0b;
   --fg: #e9edea;
+  --fg-body: #c2c9c3;
   --fg-muted: #8b948e;
   --fg-dim: #4e5651;
   --border: rgba(255, 255, 255, 0.08);
@@ -66,7 +67,7 @@
   --sl-color-accent-low: var(--green-glow);
   --sl-color-accent: var(--accent-green);
   --sl-color-accent-high: var(--accent-green-bright);
-  --sl-color-text: var(--fg-muted);
+  --sl-color-text: var(--fg-body);
   --sl-color-text-accent: var(--accent-green-bright);
   --sl-color-text-invert: #000000;
   --sl-color-bg: var(--bg);
@@ -165,7 +166,7 @@ starlight-toc a,
 
 .sidebar-content a {
   border-radius: var(--radius-sm);
-  color: var(--fg-muted);
+  color: var(--fg-body);
   font-size: 12px;
   letter-spacing: 0.01em;
 }
@@ -212,7 +213,7 @@ main h3 {
 
 main p,
 main li {
-  color: var(--fg-muted);
+  color: var(--fg-body);
 }
 
 main strong {
@@ -276,10 +277,18 @@ main aside {
 
 #starlight__on-this-page,
 starlight-toc a {
-  color: var(--fg-dim);
-  font-size: 11px;
+  color: var(--fg-body);
+  font-size: 12px;
+}
+
+#starlight__on-this-page {
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+starlight-toc a {
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 starlight-toc a:hover,
@@ -302,7 +311,7 @@ starlight-toc a[aria-current="true"] {
 }
 
 .meta {
-  color: var(--fg-dim);
+  color: var(--fg-muted);
   font-size: 11px;
   letter-spacing: 0.04em;
 }

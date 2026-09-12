@@ -89,6 +89,22 @@ provider and theme selector, keeping the site in dark mode and removing the
 theme switcher. To re-enable Starlight's theme switcher, change that one line
 to `const darkOnly = false;`.
 
+## Design system
+
+The site's visual language is ported from the author's other site,
+[basemnt.ai](https://basemnt.ai). This includes the palette, type scale, and
+the mono-label, HUD, ticker, and iso-plate motifs. Palette values and corner
+radii live as custom properties in
+`src/styles/starlight.css`; the landing page consumes those same tokens.
+Fonts are deliberately self-hosted through the `@fontsource/*` packages, and
+this build must not make remote font or CDN requests.
+
+The hero terminal lines are the actual output of the repository quickstart.
+Run `bun run quickstart.ts` from the repository root to verify the
+`durable at txid ...` and `read: hello from walrusd` lines. Re-verify those
+strings whenever the quickstart changes; do not hand-edit them to look
+plausible.
+
 ## Adding a page
 
 Add a Markdown file to the repository-level `docs/` directory. It appears at

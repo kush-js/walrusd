@@ -7,7 +7,7 @@ const base = import.meta.env.BASE_URL.endsWith("/")
 
 export const landingCopy = {
   meta: {
-    title: "walrusd",
+    title: "walrusd — Write-Ahead Log in object storage",
     description:
       "A horizontally scalable, multi-tenant SQLite runtime with one logical database per user.",
   },
