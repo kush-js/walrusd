@@ -7,6 +7,15 @@ const base =
     ? "/"
     : `/${rawBase.replace(/^\/+|\/+$/g, "")}/`;
 const darkOnly = true;
+const components = {
+  PageTitle: "./src/components/PageTitle.astro",
+  ...(darkOnly
+    ? {
+        ThemeProvider: "./src/components/DarkThemeProvider.astro",
+        ThemeSelect: "./src/components/NoThemeSelect.astro",
+      }
+    : {}),
+};
 
 export default defineConfig({
   site: process.env.SITE_URL || process.env.CF_PAGES_URL,
@@ -35,12 +44,7 @@ export default defineConfig({
       expressiveCode: {
         themes: ["github-dark"],
       },
-      components: darkOnly
-        ? {
-            ThemeProvider: "./src/components/DarkThemeProvider.astro",
-            ThemeSelect: "./src/components/NoThemeSelect.astro",
-          }
-        : undefined,
+      components,
       customCss: darkOnly ? ["./src/styles/starlight.css"] : [],
     }),
   ],

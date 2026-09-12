@@ -1,4 +1,308 @@
-/* Starlight's theme switcher is disabled, so keep the document dark-only. */
-:root {
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
+@import "@fontsource/ibm-plex-mono/latin-600.css";
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
+:root,
+:root[data-theme="light"] {
   color-scheme: dark;
+  --bg: #000000;
+  --bg-elevated: #070a08;
+  --surface: #0a0d0b;
+  --fg: #e9edea;
+  --fg-muted: #8b948e;
+  --fg-dim: #4e5651;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.16);
+  --accent-green: #34d399;
+  --accent-green-deep: #10b981;
+  --accent-green-bright: #8df5c6;
+  --accent-red: #ef4444;
+  --accent-yellow: #f59e0b;
+  --green-glow: rgba(52, 211, 153, 0.14);
+  --green-dim: rgba(52, 211, 153, 0.35);
+  --radius: 6px;
+  --radius-sm: 3px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --font-sans: Inter, system-ui, -apple-system, Segoe UI, Helvetica Neue, Arial,
+    sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace;
+
+  --sl-color-white: var(--fg);
+  --sl-color-gray-1: var(--fg);
+  --sl-color-gray-2: var(--fg-muted);
+  --sl-color-gray-3: var(--fg-muted);
+  --sl-color-gray-4: var(--fg-dim);
+  --sl-color-gray-5: var(--border);
+  --sl-color-gray-6: var(--surface);
+  --sl-color-gray-7: var(--bg-elevated);
+  --sl-color-black: var(--bg);
+
+  --sl-color-orange-low: rgba(245, 158, 11, 0.12);
+  --sl-color-orange: var(--accent-yellow);
+  --sl-color-orange-high: var(--accent-yellow);
+  --sl-color-green-low: var(--green-glow);
+  --sl-color-green: var(--accent-green);
+  --sl-color-green-high: var(--accent-green-bright);
+  --sl-color-blue-low: var(--green-glow);
+  --sl-color-blue: var(--accent-green-deep);
+  --sl-color-blue-high: var(--accent-green-bright);
+  --sl-color-purple-low: var(--green-glow);
+  --sl-color-purple: var(--accent-green);
+  --sl-color-purple-high: var(--accent-green-bright);
+  --sl-color-red-low: rgba(239, 68, 68, 0.12);
+  --sl-color-red: var(--accent-red);
+  --sl-color-red-high: #fca5a5;
+
+  --sl-color-accent-low: var(--green-glow);
+  --sl-color-accent: var(--accent-green);
+  --sl-color-accent-high: var(--accent-green-bright);
+  --sl-color-text: var(--fg-muted);
+  --sl-color-text-accent: var(--accent-green-bright);
+  --sl-color-text-invert: #000000;
+  --sl-color-bg: var(--bg);
+  --sl-color-bg-nav: rgba(0, 0, 0, 0.82);
+  --sl-color-bg-sidebar: var(--bg-elevated);
+  --sl-color-bg-inline-code: var(--surface);
+  --sl-color-bg-accent: var(--accent-green);
+  --sl-color-hairline-light: var(--border-hover);
+  --sl-color-hairline: var(--border);
+  --sl-color-hairline-shade: var(--bg);
+  --sl-color-backdrop-overlay: rgba(0, 0, 0, 0.72);
+
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  color: #000000;
+  background: var(--accent-green);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: 2px;
+}
+
+body:has(.landing)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  opacity: 0.02;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+}
+
+.header {
+  border-color: var(--border);
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(12px);
+}
+
+.site-title {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.site-title:hover {
+  color: var(--accent-green);
+}
+
+.social-icons::after {
+  border-color: var(--border);
+}
+
+.sidebar-pane,
+.right-sidebar-pane {
+  border-color: var(--border);
+  background: var(--bg-elevated);
+}
+
+.sidebar-content {
+  font-family: var(--font-mono);
+}
+
+.sidebar-content .large,
+.sidebar-content a,
+#starlight__on-this-page,
+starlight-toc a,
+.pagination-links a,
+.meta {
+  font-family: var(--font-mono);
+}
+
+.sidebar-content .large {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.sidebar-content a {
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-content a:hover,
+.sidebar-content a:focus {
+  color: var(--accent-green);
+  background: var(--green-glow);
+}
+
+.sidebar-content [aria-current="page"],
+.sidebar-content [aria-current="page"]:hover,
+.sidebar-content [aria-current="page"]:focus {
+  color: var(--fg);
+  background: var(--surface);
+  box-shadow: inset 2px 0 var(--accent-green);
+}
+
+main h1,
+main h2,
+main h3,
+main h4,
+main h5,
+main h6 {
+  color: var(--fg);
+  letter-spacing: -0.02em;
+}
+
+main h1 {
+  font-size: clamp(30px, 4vw, 48px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+main h2 {
+  font-size: clamp(24px, 3vw, 36px);
+  font-weight: 700;
+}
+
+main h3 {
+  font-size: clamp(17px, 2vw, 20px);
+  font-weight: 600;
+}
+
+main p,
+main li {
+  color: var(--fg-muted);
+}
+
+main strong {
+  color: var(--fg);
+}
+
+main a {
+  color: var(--accent-green-bright);
+  text-decoration-color: var(--green-dim);
+  text-underline-offset: 0.2em;
+}
+
+main a:hover {
+  color: var(--accent-green);
+  text-decoration-color: var(--accent-green);
+}
+
+main :not(pre) > code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+
+main pre,
+main .expressive-code figure {
+  border-color: var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+main table {
+  border-color: var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+main th {
+  color: var(--fg);
+  background: var(--surface);
+}
+
+main th,
+main td {
+  border-color: var(--border);
+}
+
+main tr:nth-child(2n) {
+  background: var(--bg-elevated);
+}
+
+main blockquote {
+  border-color: var(--green-dim);
+  color: var(--fg-muted);
+  background: var(--green-glow);
+}
+
+main aside {
+  border-radius: var(--radius);
+}
+
+#starlight__on-this-page,
+starlight-toc a {
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+starlight-toc a:hover,
+starlight-toc a[aria-current="true"] {
+  color: var(--accent-green);
+}
+
+.pagination-links a {
+  border-color: var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.pagination-links a:hover {
+  border-color: var(--green-dim);
+}
+
+.pagination-links .link-title {
+  color: var(--fg);
+}
+
+.meta {
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }
