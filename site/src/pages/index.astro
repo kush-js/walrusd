@@ -64,27 +64,6 @@ import { landingCopy } from "../data/landing";
       </div>
     </section>
 
-    <div class="ticker" role="region" aria-label={landingCopy.hero.factsLabel}>
-      <div class="ticker-track">
-        <div class="ticker-group">
-          {
-            landingCopy.hero.ticker.map((fact) => (
-              <span class="ticker-item">
-                <span class="val">{fact}</span>
-              </span>
-            ))
-          }
-        </div>
-        <div class="ticker-group" aria-hidden="true">
-          {
-            landingCopy.hero.ticker.map((fact) => (
-              <span class="ticker-item">{fact}</span>
-            ))
-          }
-        </div>
-      </div>
-    </div>
-
     <section class="properties-section" aria-label={landingCopy.capabilities.eyebrow}>
       <div class="container">
         <div class="status-grid reveal">
@@ -510,48 +489,6 @@ import { landingCopy } from "../data/landing";
   .hero-meta .output {
     display: block;
     color: var(--fg-muted);
-  }
-
-  .ticker {
-    overflow: hidden;
-    padding: 14px 0;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-elevated);
-  }
-
-  .ticker-track {
-    display: flex;
-    width: max-content;
-    animation: ticker-scroll 36s linear infinite;
-  }
-
-  .ticker:hover .ticker-track {
-    animation-play-state: paused;
-  }
-
-  .ticker-group {
-    display: flex;
-  }
-
-  .ticker-item {
-    display: flex;
-    align-items: center;
-    color: var(--fg-muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .ticker-item::after {
-    content: "//";
-    margin: 0 28px;
-    color: rgba(52, 211, 153, 0.25);
-  }
-
-  .ticker-item .val {
-    color: var(--accent-green);
   }
 
   .properties-section {
@@ -1279,12 +1216,6 @@ import { landingCopy } from "../data/landing";
     50% {
       opacity: 1;
       transform: scale(1.06);
-    }
-  }
-
-  @keyframes ticker-scroll {
-    to {
-      transform: translateX(-50%);
     }
   }
 

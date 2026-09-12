@@ -93,7 +93,7 @@ to `const darkOnly = false;`.
 
 The site's visual language is ported from the author's other site,
 [basemnt.ai](https://basemnt.ai). This includes the palette, type scale, and
-the mono-label, HUD, ticker, and iso-plate motifs. Palette values and corner
+the mono-label, HUD, and iso-plate motifs. Palette values and corner
 radii live as custom properties in
 `src/styles/starlight.css`; the landing page consumes those same tokens.
 Fonts are deliberately self-hosted through the `@fontsource/*` packages, and

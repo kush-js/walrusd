@@ -25,22 +25,6 @@ export const landingCopy = {
       label: "View on GitHub",
       href: "https://github.com/kush-js/walrusd",
     },
-    facts: [
-      "No writer fleet",
-      "No routing layer",
-      "No sticky sessions",
-    ],
-    factsLabel: "Deployment properties",
-    ticker: [
-      "No writer fleet",
-      "No routing layer",
-      "No sticky sessions",
-      "Stateless API instances",
-      "Redis / Valkey leases",
-      "Synchronous LTX flush",
-      "Remote-committed reads",
-      "No conditional writes",
-    ],
     terminal: [
       {
         prompt: "$ npm install @walrusd/db",
