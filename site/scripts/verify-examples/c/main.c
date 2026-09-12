@@ -12,6 +12,11 @@ const char *walrusd_runtime_close(uint64_t h);
 void walrusd_free(char *p);
 
 static uint64_t create_runtime_example(void) {
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 const char *walrusd_runtime_version(void);
 uint64_t walrusd_runtime_init(const char *req, int n);
 void walrusd_free(char *p);
@@ -44,6 +49,10 @@ return descriptor;
 
 static void read_example(uint64_t handle, const char *descriptor,
                          long long deadline_ms) {
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 const char *walrusd_runtime_read(uint64_t h, const char *req, int n,
                                  long long deadline_ms);
 void walrusd_free(char *p);
@@ -63,6 +72,10 @@ walrusd_free((char *)response);
 
 static void write_example(uint64_t handle, const char *descriptor,
                           long long deadline_ms) {
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 const char *walrusd_runtime_write(uint64_t h, const char *req, int n,
                                   long long deadline_ms);
 void walrusd_free(char *p);
@@ -80,6 +93,10 @@ if (strstr(response, "\"ok\":true") == NULL) { /* read the error envelope */ }
 const char *txid = strstr(response, "\"txid\":\"") + strlen("\"txid\":\"");
 printf("C ABI durable at txid %.*s\n", (int)(strchr(txid, '"') - txid), txid);
 walrusd_free((char *)response);
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 const char *error_response = walrusd_runtime_write(
     handle, write_request, (int)strlen(write_request), deadline_ms);

@@ -108,6 +108,11 @@ const db = new WalrusdDatabase({
 });
 ```
 ```c title="create_runtime.c"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 const char *walrusd_runtime_version(void);
 uint64_t walrusd_runtime_init(const char *req, int n);
 void walrusd_free(char *p);
@@ -223,6 +228,10 @@ const { rows } = await db.read({
 const body = rows[0].body;
 ```
 ```c title="read.c"
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 const char *walrusd_runtime_read(uint64_t h, const char *req, int n,
                                  long long deadline_ms);
 void walrusd_free(char *p);
@@ -315,6 +324,10 @@ const { txid } = await db.write({
 });
 ```
 ```c title="write.c"
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 const char *walrusd_runtime_write(uint64_t h, const char *req, int n,
                                   long long deadline_ms);
 void walrusd_free(char *p);
@@ -438,6 +451,10 @@ try {
 }
 ```
 ```c title="errors.c"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 const char *error_response = walrusd_runtime_write(
     handle, write_request, (int)strlen(write_request), deadline_ms);
 if (strstr(error_response, "\"ok\":false") != NULL) {
