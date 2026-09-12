@@ -15,6 +15,7 @@ const nodeBin = process.env.NODE?.trim() || process.execPath;
 const pythonBin = process.env.PYTHON?.trim() || "python3";
 const npmBin = process.env.NPM?.trim() || "npm";
 const cCompiler = process.env.CC?.trim() || "cc";
+const literalExampleRoot = "/tmp/walrusd-example";
 
 const languages = [
   {
@@ -313,19 +314,12 @@ function assertOutput(language, label, output) {
   }
 }
 
-async function makeRunEnv(root) {
-  const storageRoot = path.join(root, "storage");
-  const bufferRoot = path.join(root, "buffers");
+async function makeRunEnv(root, extra = {}) {
   const tempRoot = path.join(root, "tmp");
-  await Promise.all(
-    [storageRoot, bufferRoot, tempRoot].map((directory) =>
-      fs.mkdir(directory, { recursive: true }),
-    ),
-  );
+  await fs.mkdir(tempRoot, { recursive: true });
   return {
     ...process.env,
-    WALRUSD_EXAMPLE_ROOT: storageRoot,
-    WALRUSD_BUFFER_ROOT: bufferRoot,
+    ...extra,
     TMPDIR: tempRoot,
     CGO_ENABLED: "1",
     PATH: `${path.dirname(goBin)}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -334,7 +328,11 @@ async function makeRunEnv(root) {
 
 async function runGo(root, sharedLibrary) {
   const moduleDir = path.join(root, "module");
+  const storageRoot = path.join(root, "storage");
+  const bufferRoot = path.join(root, "buffers");
   await fs.mkdir(moduleDir, { recursive: true });
+  await fs.mkdir(storageRoot, { recursive: true });
+  await fs.mkdir(bufferRoot, { recursive: true });
   const moduleSource = readFileSync(path.join(repoDir, "go.mod"), "utf8");
   await fs.writeFile(
     path.join(moduleDir, "go.mod"),
@@ -395,7 +393,10 @@ async function runGo(root, sharedLibrary) {
   );
   const output = run("go run", binary, [], {
     cwd: moduleDir,
-    env: await makeRunEnv(root),
+    env: await makeRunEnv(root, {
+      WALRUSD_EXAMPLE_ROOT: storageRoot,
+      WALRUSD_BUFFER_ROOT: bufferRoot,
+    }),
   });
   assertOutput("go", "Go harness", output);
 }
@@ -488,14 +489,22 @@ async function runC(root, sharedLibrary) {
 }
 
 async function runPython(root, sharedLibrary) {
+  await fs.copyFile(
+    sharedLibrary,
+    path.join(literalExampleRoot, "libwalrusd.so"),
+  );
   const output = run("python run", pythonBin, [path.join(scriptDir, "python", "main.py")], {
-    cwd: root,
-    env: {
-      ...(await makeRunEnv(root)),
-      WALRUSD_LIBRARY: sharedLibrary,
-    },
+    cwd: literalExampleRoot,
+    env: await makeRunEnv(root),
   });
   assertOutput("python", "Python harness", output);
+}
+
+async function prepareLiteralExampleRoot() {
+  await fs.rm(literalExampleRoot, { recursive: true, force: true });
+  await fs.mkdir(path.join(literalExampleRoot, "buffers"), {
+    recursive: true,
+  });
 }
 
 async function main() {
@@ -540,9 +549,14 @@ async function main() {
 
     for (const [name, runner] of runners) {
       const root = await fs.mkdtemp(path.join(tempRoot, `${name}-`));
+      const usesLiteralRoot = name !== "go";
       try {
+        if (usesLiteralRoot) await prepareLiteralExampleRoot();
         await runner(root, sharedLibrary);
       } finally {
+        if (usesLiteralRoot) {
+          await fs.rm(literalExampleRoot, { recursive: true, force: true });
+        }
         await fs.rm(root, { recursive: true, force: true });
       }
     }
