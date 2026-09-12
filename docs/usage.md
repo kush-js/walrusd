@@ -66,7 +66,8 @@ go vet   -tags vfs ./...
 
 ### Create a runtime
 
-```go
+:::variants
+```go title="create_runtime.go"
 package main
 
 import (
@@ -97,6 +98,252 @@ func main() {
     _ = rt
 }
 ```
+```ts title="create_runtime.ts"
+import { WalrusdDatabase } from "@walrusd/db";
+
+const root = process.env.WALRUSD_EXAMPLE_ROOT ?? "/tmp/walrusd-example";
+
+const db = new WalrusdDatabase({
+  owner: "api-pod-7",                 // this instance's identity (lease owner)
+  requestTimeoutMs: 20_000,           // per-attempt timeout; default 20_000
+  // redisAddress: "127.0.0.1:6379", // optional shared leases
+  // (unset = in-process memory leases: dev/single-process only)
+});
+
+const descriptor = {
+  database_id: "users/user_1a4b",
+  storage: { provider: "file", file_root: root },
+  credentials: {},
+};
+
+const { txid } = await db.write({
+  database: descriptor,
+  idempotencyKey: "create-event-42",
+  statements: [
+    { sql: "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)" },
+    { sql: "INSERT INTO events (id, body) VALUES (?, ?)", params: [42, "hello from walrusd"] },
+  ],
+});
+
+const { rows } = await db.read({
+  database: descriptor,
+  sql: "SELECT body FROM events WHERE id = ?",
+  params: [42],
+});
+
+console.log(`Node.js / Bun durable at txid ${txid}`);
+console.log(`Node.js / Bun read: ${rows[0].body}`);
+await db.close();
+```
+```c title="create_runtime.c"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+const char *walrusd_runtime_version(void);
+uint64_t walrusd_runtime_init(const char *req, int n);
+const char *walrusd_runtime_write(uint64_t h, const char *req, int n,
+                                  long long deadline_ms);
+const char *walrusd_runtime_read(uint64_t h, const char *req, int n,
+                                 long long deadline_ms);
+const char *walrusd_runtime_close(uint64_t h);
+void walrusd_free(char *p);
+
+// walrusd_runtime_read_dsn is also exported for native SQLite readers.
+static void check_ok(const char *json) {
+    if (strstr(json, "\"ok\":true") != NULL) return;
+
+    const char *class_start = strstr(json, "\"class\":\"");
+    if (class_start != NULL) {
+        class_start += strlen("\"class\":\"");
+        const char *class_end = strchr(class_start, '"');
+        fprintf(stderr, "walrusd error class: %.*s\n",
+                (int)(class_end - class_start), class_start);
+    } else {
+        fprintf(stderr, "walrusd response without ok=true: %s\n", json);
+    }
+    exit(EXIT_FAILURE);
+}
+
+static char *write_request(const char *root) {
+    const char *format =
+        "{\"descriptor\":{\"database_id\":\"users/user_1a4b\","
+        "\"storage\":{\"provider\":\"file\",\"file_root\":\"%s\"},"
+        "\"credentials\":{}},\"idempotency_key\":\"create-event-42\","
+        "\"statements\":["
+        "{\"sql\":\"CREATE TABLE IF NOT EXISTS events "
+        "(id INTEGER PRIMARY KEY, body TEXT)\"},"
+        "{\"sql\":\"INSERT INTO events (id, body) VALUES (?, ?)\","
+        "\"params\":[42,\"hello from walrusd\"]}]}";
+    int size = snprintf(NULL, 0, format, root);
+    char *json = malloc((size_t)size + 1);
+    if (json == NULL) exit(EXIT_FAILURE);
+    snprintf(json, (size_t)size + 1, format, root);
+    return json;
+}
+
+static char *read_request(const char *root) {
+    const char *format =
+        "{\"descriptor\":{\"database_id\":\"users/user_1a4b\","
+        "\"storage\":{\"provider\":\"file\",\"file_root\":\"%s\"},"
+        "\"credentials\":{}},\"sql\":\"SELECT body FROM events WHERE id = 42\"}";
+    int size = snprintf(NULL, 0, format, root);
+    char *json = malloc((size_t)size + 1);
+    if (json == NULL) exit(EXIT_FAILURE);
+    snprintf(json, (size_t)size + 1, format, root);
+    return json;
+}
+
+static char *txid_from(const char *json) {
+    const char *start = strstr(json, "\"txid\":\"");
+    if (start == NULL) return NULL;
+    start += strlen("\"txid\":\"");
+    const char *end = strchr(start, '"');
+    if (end == NULL) return NULL;
+    size_t size = (size_t)(end - start);
+    char *txid = malloc(size + 1);
+    if (txid == NULL) exit(EXIT_FAILURE);
+    memcpy(txid, start, size);
+    txid[size] = '\0';
+    return txid;
+}
+
+int main(void) {
+    const char *root = getenv("WALRUSD_EXAMPLE_ROOT");
+    const char *buffer_root = getenv("WALRUSD_BUFFER_ROOT");
+    if (root == NULL) root = "/tmp/walrusd-example";
+    if (buffer_root == NULL) buffer_root = "/tmp/walrusd-buffers";
+
+    const char *version = walrusd_runtime_version();
+    check_ok(version);
+    walrusd_free((char *)version);
+
+    char init_request[1024];
+    snprintf(init_request, sizeof(init_request),
+             "{\"owner\":\"api-pod-7\",\"config\":{"
+             "\"request_timeout_ms\":20000,"
+             "\"write_buffer_root_path\":\"%s\"}}",
+             buffer_root);
+    uint64_t handle = walrusd_runtime_init(
+        init_request, (int)strlen(init_request));
+    if (handle == 0) {
+        fprintf(stderr, "walrusd_runtime_init failed\n");
+        return EXIT_FAILURE;
+    }
+
+    long long deadline = (long long)time(NULL) * 1000 + 20000;
+    char *write_body = write_request(root);
+    const char *write_response = walrusd_runtime_write(
+        handle, write_body, (int)strlen(write_body), deadline);
+    check_ok(write_response);
+    char *txid = txid_from(write_response);
+    walrusd_free(write_body);
+    walrusd_free((char *)write_response);
+
+    char *read_body = read_request(root);
+    const char *read_response = walrusd_runtime_read(
+        handle, read_body, (int)strlen(read_body), deadline);
+    check_ok(read_response);
+    if (strstr(read_response, "\"body\":\"hello from walrusd\"") == NULL) {
+        fprintf(stderr, "unexpected read response: %s\n", read_response);
+        return EXIT_FAILURE;
+    }
+    printf("C ABI durable at txid %s\n", txid);
+    printf("C ABI read: hello from walrusd\n");
+    walrusd_free(read_body);
+    walrusd_free((char *)read_response);
+    free(txid);
+
+    const char *close_response = walrusd_runtime_close(handle);
+    check_ok(close_response);
+    walrusd_free((char *)close_response);
+    return EXIT_SUCCESS;
+}
+```
+```python title="create_runtime.py"
+import ctypes
+import json
+import os
+import time
+
+lib = ctypes.CDLL(os.environ["WALRUSD_LIBRARY"])
+root = os.environ.get("WALRUSD_EXAMPLE_ROOT", "/tmp/walrusd-example")
+buffer_root = os.environ.get("WALRUSD_BUFFER_ROOT", "/tmp/walrusd-buffers")
+
+lib.walrusd_runtime_version.restype = ctypes.c_void_p
+lib.walrusd_runtime_init.argtypes = [ctypes.c_char_p, ctypes.c_int]
+lib.walrusd_runtime_init.restype = ctypes.c_uint64
+lib.walrusd_runtime_write.argtypes = [
+    ctypes.c_uint64, ctypes.c_char_p, ctypes.c_int, ctypes.c_longlong
+]
+lib.walrusd_runtime_write.restype = ctypes.c_void_p
+lib.walrusd_runtime_read.argtypes = [
+    ctypes.c_uint64, ctypes.c_char_p, ctypes.c_int, ctypes.c_longlong
+]
+lib.walrusd_runtime_read.restype = ctypes.c_void_p
+lib.walrusd_runtime_close.argtypes = [ctypes.c_uint64]
+lib.walrusd_runtime_close.restype = ctypes.c_void_p
+lib.walrusd_free.argtypes = [ctypes.c_void_p]
+
+
+def consume(pointer):
+    if not pointer:
+        raise RuntimeError("walrusd returned a null response")
+    envelope = json.loads(ctypes.string_at(pointer).decode())
+    lib.walrusd_free(pointer)
+    if not envelope["ok"]:
+        raise RuntimeError(
+            f'{envelope["error"]["class"]}: {envelope["error"]["message"]}'
+        )
+    return envelope.get("result")
+
+
+consume(lib.walrusd_runtime_version())
+init_request = json.dumps({
+    "owner": "api-pod-7",
+    "config": {
+        "request_timeout_ms": 20_000,
+        "write_buffer_root_path": buffer_root,
+    },
+}).encode()
+handle = lib.walrusd_runtime_init(init_request, len(init_request))
+if handle == 0:
+    raise RuntimeError("walrusd_runtime_init failed")
+
+descriptor = {
+    "database_id": "users/user_1a4b",
+    "storage": {"provider": "file", "file_root": root},
+    "credentials": {},
+}
+deadline = int(time.time() * 1000) + 20_000
+write_request = json.dumps({
+    "descriptor": descriptor,
+    "idempotency_key": "create-event-42",
+    "statements": [
+        {"sql": "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)"},
+        {"sql": "INSERT INTO events (id, body) VALUES (?, ?)", "params": [42, "hello from walrusd"]},
+    ],
+}).encode()
+result = consume(lib.walrusd_runtime_write(
+    handle, write_request, len(write_request), deadline))
+txid = result["txid"]
+
+read_request = json.dumps({
+    "descriptor": descriptor,
+    "sql": "SELECT body FROM events WHERE id = ?",
+    "params": [42],
+}).encode()
+result = consume(lib.walrusd_runtime_read(
+    handle, read_request, len(read_request), deadline))
+body = result["rows"][0]["body"]
+
+print(f"Python (C ABI) durable at txid {txid}")
+print(f"Python (C ABI) read: {body}")
+consume(lib.walrusd_runtime_close(handle))
+```
+:::
 
 `runtime.New` validates configuration and rejects anything that could
 release a lease without a confirmed flush — `RequireFlushBeforeRelease`
