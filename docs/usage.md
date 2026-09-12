@@ -99,48 +99,24 @@ func main() {
 }
 ```
 ```ts title="create_runtime.ts"
-import { WalrusdDatabase } from "@walrusd/db";
+import { WalrusdDatabase, WalrusdError } from "@walrusd/db";
 
-const root = process.env.WALRUSD_EXAMPLE_ROOT ?? "/tmp/walrusd-example";
+async function createRuntime() {
+  const db = new WalrusdDatabase({
+    owner: "api-pod-7",                 // this instance's identity (lease owner)
+    requestTimeoutMs: 20_000,           // per-attempt timeout; default 20_000
+    // redisAddress: "127.0.0.1:6379", // optional shared leases
+    // (unset = in-process memory leases: dev/single-process only)
+  });
 
-const db = new WalrusdDatabase({
-  owner: "api-pod-7",                 // this instance's identity (lease owner)
-  requestTimeoutMs: 20_000,           // per-attempt timeout; default 20_000
-  // redisAddress: "127.0.0.1:6379", // optional shared leases
-  // (unset = in-process memory leases: dev/single-process only)
-});
-
-const descriptor = {
-  database_id: "users/user_1a4b",
-  storage: { provider: "file", file_root: root },
-  credentials: {},
-};
-
-const { txid } = await db.write({
-  database: descriptor,
-  idempotencyKey: "create-event-42",
-  statements: [
-    { sql: "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)" },
-    { sql: "INSERT INTO events (id, body) VALUES (?, ?)", params: [42, "hello from walrusd"] },
-  ],
-});
-
-const { rows } = await db.read({
-  database: descriptor,
-  sql: "SELECT body FROM events WHERE id = ?",
-  params: [42],
-});
-
-console.log(`Node.js / Bun durable at txid ${txid}`);
-console.log(`Node.js / Bun read: ${rows[0].body}`);
-await db.close();
+  await db.close();
+}
 ```
 ```c title="create_runtime.c"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 const char *walrusd_runtime_version(void);
 uint64_t walrusd_runtime_init(const char *req, int n);
@@ -151,7 +127,6 @@ const char *walrusd_runtime_read(uint64_t h, const char *req, int n,
 const char *walrusd_runtime_close(uint64_t h);
 void walrusd_free(char *p);
 
-// walrusd_runtime_read_dsn is also exported for native SQLite readers.
 static void check_ok(const char *json) {
     if (strstr(json, "\"ok\":true") != NULL) return;
 
@@ -167,110 +142,47 @@ static void check_ok(const char *json) {
     exit(EXIT_FAILURE);
 }
 
-static char *write_request(const char *root) {
-    const char *format =
-        "{\"descriptor\":{\"database_id\":\"users/user_1a4b\","
-        "\"storage\":{\"provider\":\"file\",\"file_root\":\"%s\"},"
-        "\"credentials\":{}},\"idempotency_key\":\"create-event-42\","
-        "\"statements\":["
-        "{\"sql\":\"CREATE TABLE IF NOT EXISTS events "
-        "(id INTEGER PRIMARY KEY, body TEXT)\"},"
-        "{\"sql\":\"INSERT INTO events (id, body) VALUES (?, ?)\","
-        "\"params\":[42,\"hello from walrusd\"]}]}";
-    int size = snprintf(NULL, 0, format, root);
-    char *json = malloc((size_t)size + 1);
-    if (json == NULL) exit(EXIT_FAILURE);
-    snprintf(json, (size_t)size + 1, format, root);
-    return json;
-}
-
-static char *read_request(const char *root) {
-    const char *format =
-        "{\"descriptor\":{\"database_id\":\"users/user_1a4b\","
-        "\"storage\":{\"provider\":\"file\",\"file_root\":\"%s\"},"
-        "\"credentials\":{}},\"sql\":\"SELECT body FROM events WHERE id = 42\"}";
-    int size = snprintf(NULL, 0, format, root);
-    char *json = malloc((size_t)size + 1);
-    if (json == NULL) exit(EXIT_FAILURE);
-    snprintf(json, (size_t)size + 1, format, root);
-    return json;
-}
-
-static char *txid_from(const char *json) {
-    const char *start = strstr(json, "\"txid\":\"");
-    if (start == NULL) return NULL;
-    start += strlen("\"txid\":\"");
-    const char *end = strchr(start, '"');
-    if (end == NULL) return NULL;
-    size_t size = (size_t)(end - start);
-    char *txid = malloc(size + 1);
-    if (txid == NULL) exit(EXIT_FAILURE);
-    memcpy(txid, start, size);
-    txid[size] = '\0';
-    return txid;
-}
-
-int main(void) {
-    const char *root = getenv("WALRUSD_EXAMPLE_ROOT");
-    const char *buffer_root = getenv("WALRUSD_BUFFER_ROOT");
-    if (root == NULL) root = "/tmp/walrusd-example";
-    if (buffer_root == NULL) buffer_root = "/tmp/walrusd-buffers";
-
+uint64_t create_runtime(const char *buffer_root) {
     const char *version = walrusd_runtime_version();
     check_ok(version);
     walrusd_free((char *)version);
 
-    char init_request[1024];
-    snprintf(init_request, sizeof(init_request),
+    char request[1024];
+    snprintf(request, sizeof(request),
              "{\"owner\":\"api-pod-7\",\"config\":{"
              "\"request_timeout_ms\":20000,"
              "\"write_buffer_root_path\":\"%s\"}}",
              buffer_root);
     uint64_t handle = walrusd_runtime_init(
-        init_request, (int)strlen(init_request));
+        request, (int)strlen(request));
     if (handle == 0) {
         fprintf(stderr, "walrusd_runtime_init failed\n");
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
+    return handle;
+}
 
-    long long deadline = (long long)time(NULL) * 1000 + 20000;
-    char *write_body = write_request(root);
-    const char *write_response = walrusd_runtime_write(
-        handle, write_body, (int)strlen(write_body), deadline);
-    check_ok(write_response);
-    char *txid = txid_from(write_response);
-    walrusd_free(write_body);
-    walrusd_free((char *)write_response);
-
-    char *read_body = read_request(root);
-    const char *read_response = walrusd_runtime_read(
-        handle, read_body, (int)strlen(read_body), deadline);
-    check_ok(read_response);
-    if (strstr(read_response, "\"body\":\"hello from walrusd\"") == NULL) {
-        fprintf(stderr, "unexpected read response: %s\n", read_response);
-        return EXIT_FAILURE;
-    }
-    printf("C ABI durable at txid %s\n", txid);
-    printf("C ABI read: hello from walrusd\n");
-    walrusd_free(read_body);
-    walrusd_free((char *)read_response);
-    free(txid);
-
-    const char *close_response = walrusd_runtime_close(handle);
-    check_ok(close_response);
-    walrusd_free((char *)close_response);
-    return EXIT_SUCCESS;
+void close_runtime(uint64_t handle) {
+    const char *response = walrusd_runtime_close(handle);
+    check_ok(response);
+    walrusd_free((char *)response);
 }
 ```
 ```python title="create_runtime.py"
 import ctypes
 import json
 import os
-import time
 
 lib = ctypes.CDLL(os.environ["WALRUSD_LIBRARY"])
-root = os.environ.get("WALRUSD_EXAMPLE_ROOT", "/tmp/walrusd-example")
 buffer_root = os.environ.get("WALRUSD_BUFFER_ROOT", "/tmp/walrusd-buffers")
+
+
+class WalrusdError(RuntimeError):
+    def __init__(self, payload):
+        super().__init__(payload["message"])
+        self.code = payload["class"]
+        self.retry_after_ms = payload.get("retry_after_ms")
+
 
 lib.walrusd_runtime_version.restype = ctypes.c_void_p
 lib.walrusd_runtime_init.argtypes = [ctypes.c_char_p, ctypes.c_int]
@@ -294,54 +206,27 @@ def consume(pointer):
     envelope = json.loads(ctypes.string_at(pointer).decode())
     lib.walrusd_free(pointer)
     if not envelope["ok"]:
-        raise RuntimeError(
-            f'{envelope["error"]["class"]}: {envelope["error"]["message"]}'
-        )
+        raise WalrusdError(envelope["error"])
     return envelope.get("result")
 
 
-consume(lib.walrusd_runtime_version())
-init_request = json.dumps({
-    "owner": "api-pod-7",
-    "config": {
-        "request_timeout_ms": 20_000,
-        "write_buffer_root_path": buffer_root,
-    },
-}).encode()
-handle = lib.walrusd_runtime_init(init_request, len(init_request))
-if handle == 0:
-    raise RuntimeError("walrusd_runtime_init failed")
+def create_runtime():
+    consume(lib.walrusd_runtime_version())
+    init_request = json.dumps({
+        "owner": "api-pod-7",
+        "config": {
+            "request_timeout_ms": 20_000,
+            "write_buffer_root_path": buffer_root,
+        },
+    }).encode()
+    handle = lib.walrusd_runtime_init(init_request, len(init_request))
+    if handle == 0:
+        raise RuntimeError("walrusd_runtime_init failed")
+    return handle
 
-descriptor = {
-    "database_id": "users/user_1a4b",
-    "storage": {"provider": "file", "file_root": root},
-    "credentials": {},
-}
-deadline = int(time.time() * 1000) + 20_000
-write_request = json.dumps({
-    "descriptor": descriptor,
-    "idempotency_key": "create-event-42",
-    "statements": [
-        {"sql": "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)"},
-        {"sql": "INSERT INTO events (id, body) VALUES (?, ?)", "params": [42, "hello from walrusd"]},
-    ],
-}).encode()
-result = consume(lib.walrusd_runtime_write(
-    handle, write_request, len(write_request), deadline))
-txid = result["txid"]
 
-read_request = json.dumps({
-    "descriptor": descriptor,
-    "sql": "SELECT body FROM events WHERE id = ?",
-    "params": [42],
-}).encode()
-result = consume(lib.walrusd_runtime_read(
-    handle, read_request, len(read_request), deadline))
-body = result["rows"][0]["body"]
-
-print(f"Python (C ABI) durable at txid {txid}")
-print(f"Python (C ABI) read: {body}")
-consume(lib.walrusd_runtime_close(handle))
+def close_runtime(handle):
+    consume(lib.walrusd_runtime_close(handle))
 ```
 :::
 
@@ -353,6 +238,7 @@ timeout plus skew allowance; defaults (30s lease, 20s request timeout,
 
 ### Describe a database
 
+:::variants
 ```go
 d := runtime.DatabaseDescriptor{
     DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
@@ -365,6 +251,38 @@ d := runtime.DatabaseDescriptor{
     Credentials: runtime.StaticCredentials{AccessKeyID: keyID, SecretAccessKey: secret},
 }
 ```
+```ts title="describe_database.ts"
+const root = process.env.WALRUSD_EXAMPLE_ROOT ?? "/tmp/walrusd-example";
+
+const descriptor = {
+  database_id: "users/user_1a4b",
+  storage: { provider: "file", file_root: root },
+  credentials: {},
+};
+```
+```c title="describe_database.c"
+char *descriptor_json(const char *root) {
+    const char *format =
+        "{\"database_id\":\"users/user_1a4b\","
+        "\"storage\":{\"provider\":\"file\",\"file_root\":\"%s\"},"
+        "\"credentials\":{}}";
+    int size = snprintf(NULL, 0, format, root);
+    char *json = malloc((size_t)size + 1);
+    if (json == NULL) exit(EXIT_FAILURE);
+    snprintf(json, (size_t)size + 1, format, root);
+    return json;
+}
+```
+```python title="describe_database.py"
+root = os.environ.get("WALRUSD_EXAMPLE_ROOT", "/tmp/walrusd-example")
+
+descriptor = {
+    "database_id": "users/user_1a4b",
+    "storage": {"provider": "file", "file_root": root},
+    "credentials": {},
+}
+```
+:::
 
 `Credentials` is a `CredentialSource` interface, so you can plug a token
 refresher instead of `StaticCredentials`. It is resolved at call time and
@@ -372,6 +290,7 @@ never persisted (spec §11).
 
 ### Read
 
+:::variants
 ```go
 err := rt.WithRead(ctx, d, func(conn *sql.Conn) error {
     var body string
@@ -379,6 +298,66 @@ err := rt.WithRead(ctx, d, func(conn *sql.Conn) error {
         `SELECT body FROM events WHERE id = ?`, 1).Scan(&body)
 })
 ```
+```ts title="read.ts"
+async function readValue(db, descriptor) {
+  const { rows } = await db.read({
+    database: descriptor,
+    sql: "SELECT body FROM events WHERE id = ?",
+    params: [1],
+  });
+  return rows;
+}
+```
+```c title="read.c"
+char *read_request(const char *descriptor) {
+    const char *format =
+        "{\"descriptor\":%s,\"sql\":"
+        "\"SELECT body FROM events WHERE id = 1\"}";
+    int size = snprintf(NULL, 0, format, descriptor);
+    char *json = malloc((size_t)size + 1);
+    if (json == NULL) exit(EXIT_FAILURE);
+    snprintf(json, (size_t)size + 1, format, descriptor);
+    return json;
+}
+
+char *read_value(uint64_t handle, const char *descriptor,
+                 long long deadline) {
+    char *body = read_request(descriptor);
+    const char *response = walrusd_runtime_read(
+        handle, body, (int)strlen(body), deadline);
+    check_ok(response);
+
+    const char *value_start = strstr(response, "\"body\":\"");
+    if (value_start == NULL) {
+        fprintf(stderr, "walrusd read response has no body: %s\n", response);
+        exit(EXIT_FAILURE);
+    }
+    value_start += strlen("\"body\":\"");
+    const char *value_end = strchr(value_start, '"');
+    if (value_end == NULL) exit(EXIT_FAILURE);
+    size_t size = (size_t)(value_end - value_start);
+    char *value = malloc(size + 1);
+    if (value == NULL) exit(EXIT_FAILURE);
+    memcpy(value, value_start, size);
+    value[size] = '\0';
+
+    walrusd_free(body);
+    walrusd_free((char *)response);
+    return value;
+}
+```
+```python title="read.py"
+def read_value(handle, descriptor, deadline):
+    request = json.dumps({
+        "descriptor": descriptor,
+        "sql": "SELECT body FROM events WHERE id = ?",
+        "params": [1],
+    }).encode()
+    result = consume(lib.walrusd_runtime_read(
+        handle, request, len(request), deadline))
+    return result["rows"][0]["body"]
+```
+:::
 
 You get a real `*sql.Conn` speaking SQLite through the Litestream VFS. No
 lease is acquired; the connection observes only flushed remote state
@@ -401,6 +380,7 @@ fully warm 10 MiB caches can use about 2 GiB.
 
 ### Write
 
+:::variants
 ```go
 // First write for a fresh database: create the schema as its own write.
 _, err := rt.WithWrite(ctx, d, "create-schema", func(conn *sql.Conn) error {
@@ -420,6 +400,73 @@ res, err := rt.WithWrite(ctx, d, "create-event-42", func(conn *sql.Conn) error {
 if err != nil { /* see error handling below */ }
 fmt.Println("durable at txid", res.TXID, "deduplicated:", res.Deduplicated)
 ```
+```ts title="write.ts"
+const { txid } = await db.write({
+  database: descriptor,
+  idempotencyKey: "create-event-42",
+  statements: [
+    { sql: "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)" },
+    { sql: "INSERT INTO events (id, body) VALUES (?, ?)", params: [1, "hello from walrusd"] },
+  ],
+});
+```
+```c title="write.c"
+char *write_request(const char *descriptor) {
+    const char *format =
+        "{\"descriptor\":%s,\"idempotency_key\":\"create-event-42\","
+        "\"statements\":["
+        "{\"sql\":\"CREATE TABLE IF NOT EXISTS events "
+        "(id INTEGER PRIMARY KEY, body TEXT)\"},"
+        "{\"sql\":\"INSERT INTO events (id, body) VALUES (?, ?)\","
+        "\"params\":[1,\"hello from walrusd\"]}]}";
+    int size = snprintf(NULL, 0, format, descriptor);
+    char *json = malloc((size_t)size + 1);
+    if (json == NULL) exit(EXIT_FAILURE);
+    snprintf(json, (size_t)size + 1, format, descriptor);
+    return json;
+}
+
+char *write_txid(uint64_t handle, const char *descriptor,
+                 long long deadline) {
+    char *body = write_request(descriptor);
+    const char *response = walrusd_runtime_write(
+        handle, body, (int)strlen(body), deadline);
+    check_ok(response);
+
+    const char *txid_start = strstr(response, "\"txid\":\"");
+    if (txid_start == NULL) {
+        fprintf(stderr, "walrusd write response has no txid: %s\n", response);
+        exit(EXIT_FAILURE);
+    }
+    txid_start += strlen("\"txid\":\"");
+    const char *txid_end = strchr(txid_start, '"');
+    if (txid_end == NULL) exit(EXIT_FAILURE);
+    size_t size = (size_t)(txid_end - txid_start);
+    char *txid = malloc(size + 1);
+    if (txid == NULL) exit(EXIT_FAILURE);
+    memcpy(txid, txid_start, size);
+    txid[size] = '\0';
+
+    walrusd_free(body);
+    walrusd_free((char *)response);
+    return txid;
+}
+```
+```python title="write.py"
+def write_txid(handle, descriptor, deadline):
+    request = json.dumps({
+        "descriptor": descriptor,
+        "idempotency_key": "create-event-42",
+        "statements": [
+            {"sql": "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)"},
+            {"sql": "INSERT INTO events (id, body) VALUES (?, ?)", "params": [1, "hello from walrusd"]},
+        ],
+    }).encode()
+    result = consume(lib.walrusd_runtime_write(
+        handle, request, len(request), deadline))
+    return result["txid"]
+```
+:::
 
 Rules the runtime enforces:
 
@@ -465,12 +512,54 @@ again. Terminal errors are never retried.
 | `DB_INVALID_ARGUMENT` | Bad descriptor, key, or SQL | Do not retry; fix the caller |
 | `DB_IDEMPOTENCY_MISMATCH` | Same key reused with different statements | Do not retry; caller bug |
 
+:::variants
 ```go
 _, err := rt.WithWrite(ctx, d, key, fn)
 if walrusderr.ClassOf(err) == walrusderr.ClassFlushFailed {
     // safe: retry with the same idempotency key
 }
 ```
+```ts title="errors.ts"
+function shouldRetry(error: unknown): boolean {
+  if (error instanceof WalrusdError) {
+    if (error.code === "DB_FLUSH_FAILED") {
+      // retry with the SAME idempotency key — the retry is a no-op if the
+      // first attempt actually committed
+      return true;
+    } else if (error.code === "DB_BUSY") {
+      // retry after error.retryAfterMs
+      return error.retryAfterMs !== undefined;
+    }
+  }
+  return false;
+}
+```
+```c title="errors.c"
+void report_retry(const char *json) {
+    if (strstr(json, "\"ok\":false") == NULL) return;
+
+    const char *class_start = strstr(json, "\"class\":\"");
+    const char *retry_start = strstr(json, "\"retry_after_ms\":");
+    if (class_start != NULL && retry_start != NULL) {
+        class_start += strlen("\"class\":\"");
+        const char *class_end = strchr(class_start, '"');
+        retry_start += strlen("\"retry_after_ms\":");
+        fprintf(stderr, "walrusd error class: %.*s (retry after %ld ms)\n",
+                (int)(class_end - class_start), class_start,
+                strtol(retry_start, NULL, 10));
+    }
+}
+```
+```python title="errors.py"
+def should_retry(error):
+    if error.code == "DB_FLUSH_FAILED":
+        # safe: retry with the same idempotency key
+        return True
+    if error.code == "DB_BUSY":
+        return error.retry_after_ms is not None
+    return False
+```
+:::
 `DB_FLUSH_FAILED` is the critical case: the write may or may not have
 reached object storage. The idempotency key makes the retry idempotent —
 that is the whole contract. The runtime never acknowledges a mutation or
