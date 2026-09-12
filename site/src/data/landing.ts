@@ -1,4 +1,4 @@
-// All landing-page copy is derived from README.md and docs/specs.md.
+// All landing-page copy is derived from README.md, docs/specs.md, and docs/usage.md.
 // Edit the landing page here so the claims and quickstart stay easy to review.
 
 const base = import.meta.env.BASE_URL.endsWith("/")
@@ -31,6 +31,52 @@ export const landingCopy = {
       "No sticky sessions",
     ],
     factsLabel: "Deployment properties",
+    ticker: [
+      "No writer fleet",
+      "No routing layer",
+      "No sticky sessions",
+      "Stateless API instances",
+      "Redis / Valkey leases",
+      "Synchronous LTX flush",
+      "Remote-committed reads",
+      "No conditional writes",
+    ],
+    terminal: [
+      {
+        prompt: "$ npm install @walrusd/db",
+        output: "",
+      },
+      {
+        prompt: "$ bun run quickstart.ts",
+        output: "# durable at txid 0000000000000002",
+      },
+      {
+        prompt: "",
+        output: "# read: hello from walrusd",
+      },
+    ],
+    status: [
+      {
+        label: "Writer fleet",
+        value: "None",
+        detail: "Any API instance can serve any request.",
+      },
+      {
+        label: "Sticky sessions",
+        value: "Not required",
+        detail: "Mutual exclusion comes from the lease.",
+      },
+      {
+        label: "Ack boundary",
+        value: "Confirmed flush",
+        detail: "Durability is confirmed by flush.",
+      },
+      {
+        label: "Read view",
+        value: "Remote committed",
+        detail: "No lease and no local hydration.",
+      },
+    ],
   },
   architecture: {
     eyebrow: "How it works",
@@ -64,6 +110,11 @@ export const landingCopy = {
         body: "The durable state is an ordered LTX chain in an S3-compatible store; conditional writes are not required.",
       },
     ],
+    hud: {
+      input: "WithWrite",
+      output: "LTX / object storage",
+    },
+    ghost: "runtime",
   },
   writePath: {
     eyebrow: "Write lifecycle",
@@ -99,12 +150,14 @@ export const landingCopy = {
     ],
     ack: {
       label: "Durability boundary",
+      value: "Confirmed flush",
       title: "The acknowledgement means the data is in object storage.",
       body:
         "Durability is confirmed by flush, never by elapsed time. Any API instance can serve any request because mutual exclusion comes from the lease, not from request routing.",
     },
     read: {
       label: "Read behavior",
+      value: "Remote committed",
       title: "Reads see only remote-committed state.",
       body:
         "Reads acquire no lease. They observe only state that Litestream has committed remotely through the VFS, with no local hydration.",
@@ -154,6 +207,7 @@ export const landingCopy = {
     intro:
       "This TypeScript example is the repository quickstart for the Node.js and Bun binding.",
     filename: "quickstart.ts",
+    status: "Static output",
     code: `import { WalrusdDatabase } from "./bindings/node/src/index";
 
 const db = new WalrusdDatabase({ owner: "my-api-instance" });
@@ -190,6 +244,7 @@ await db.close();`,
     title: "Read the design. Then embed the runtime.",
     body:
       "The specification explains the invariants; the usage guide covers the Go core, the Node.js and Bun binding, the C ABI, and the error model.",
+    prompt: "$ npm install @walrusd/db",
     action: {
       label: "Read the docs",
       href: `${base}docs/`,
