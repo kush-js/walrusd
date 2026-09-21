@@ -290,10 +290,10 @@ func (r *Runtime) Close() error {
 }
 
 // ReadDSN registers (once per process) the read VFS for the descriptor's
-// database and returns a SQLite DSN the HOST's own SQLite (e.g. Bun's
-// bun:sqlite) can open natively in litestream read mode: reads stream LTX
-// pages straight from object storage through the shared VFS. The DSN is
-// read-only; writes must go through WithWrite (spec §8).
+// database and returns a SQLite DSN the HOST's own SQLite (e.g. node:sqlite,
+// which enables SQLite's URI filenames) can open natively in litestream read
+// mode: reads stream LTX pages straight from object storage through the shared
+// VFS. The DSN is read-only; writes must go through WithWrite (spec §8).
 func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, error) {
 	db, err := d.Identity()
 	if err != nil {

@@ -173,7 +173,7 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 func (a *Adapter) Close() error { return a.rt.Close() }
 
 // ReadDSNBytes registers the per-database read VFS and returns both the DSN
-// the host's own SQLite can open (e.g. bun:sqlite) and the litestream replica
+// the host's own SQLite can open (e.g. node:sqlite) and the litestream replica
 // URL for attaching the loadable VFS extension in a separate host process.
 func (a *Adapter) ReadDSNBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	var r ReadDSNRequest

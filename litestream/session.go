@@ -58,7 +58,8 @@ func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error
 // ReadDSN returns the SQLite DSN for the host's own SQLite connection to
 // read this database through the shared litestream VFS (spec §9 read mode).
 // The VFS is registered process-wide by the runtime, so any SQLite in the
-// process (bun:sqlite, custom sqlite builds) can open it natively.
+// process opened with URI filenames (node:sqlite, the sqlite3 CLI, custom
+// sqlite builds) can open it natively.
 func (d *Database) ReadDSN(ctx context.Context, dbName string) string {
 	return fmt.Sprintf("file:walrusd_%s.db?vfs=%s&mode=ro", sanitize(dbName), d.VFSName)
 }

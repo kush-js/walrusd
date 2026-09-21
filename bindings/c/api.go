@@ -82,7 +82,7 @@ func walrusd_runtime_read(h C.uint64_t, requestBytes *C.char, n C.int, deadlineM
 
 // walrusd_runtime_read_dsn registers the read VFS for a descriptor and
 // returns the DSN as a JSON envelope. The host opens it with its OWN
-// SQLite (bun:sqlite) to read through litestream VFS natively.
+// SQLite (node:sqlite, sqlite3 CLI) to read through litestream VFS natively.
 //
 //export walrusd_runtime_read_dsn
 func walrusd_runtime_read_dsn(h C.uint64_t, requestBytes *C.char, n C.int, deadlineMs C.longlong) *C.char {

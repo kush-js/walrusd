@@ -277,13 +277,15 @@ export class WalrusdDatabase {
   /**
    * readDsn returns a SQLite DSN (file:...?vfs=walrusd_N&mode=ro) that the
    * HOST's own SQLite can open to read through litestream VFS natively,
-   * plus the replica URL for the loadable-extension path. On Bun:
-   *   1. Database.setCustomSQLite(...) once
-   *   2. scratch = new Database(":memory:");
-   *      scratch.loadExtension("<pkg>/prebuilds/libwalrusd_vfs", "sqlite3_walrusdvfs_init")
-   *      scratch.exec(`SELECT walrusd_vfs_attach('<vfs>', '<replica_url>', key, secret)`)
-   *      scratch.close()
-   *   3. new Database("file:...?vfs=<vfs>&mode=ro")
+   * plus the replica URL for the loadable-extension path. The DSN selects
+   * the VFS by name through SQLite's URI filenames, so the host must open
+   * with SQLITE_OPEN_URI; node:sqlite does, while bun:sqlite's Database
+   * treats the DSN as a literal filename. With node:sqlite (Node and Bun):
+   *   1. scratch = new DatabaseSync(":memory:", { allowExtension: true });
+   *      scratch.loadExtension("<pkg>/prebuilds/libwalrusd_vfs", "sqlite3_walrusdvfs_init");
+   *      scratch.prepare("SELECT walrusd_vfs_attach(?, ?, ?, ?)").get(vfs, replica_url, key, secret);
+   *      scratch.close();
+   *   2. new DatabaseSync(dsn, { readOnly: true })
    * Reads stream LTX pages from object storage; no lease, read-only
    * (remote-committed state only, spec §9).
    */
