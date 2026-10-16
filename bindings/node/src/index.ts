@@ -250,10 +250,13 @@ export class WalrusdDatabase {
       })
     );
     this.defaultDeadlineMs = options.requestTimeoutMs ?? 20_000;
-    const writeBudgetMs = options.retryMaxTotalMs && options.retryMaxTotalMs > 0
-      ? options.retryMaxTotalMs
-      : 20_000;
-    this.defaultWriteDeadlineMs = options.requestTimeoutMs ?? writeBudgetMs;
+    const writeBudgetMs =
+      options.retryMaxTotalMs && options.retryMaxTotalMs > 0 ? options.retryMaxTotalMs : 20_000;
+    // The deadline must cover the whole retry budget, not just one
+    // attempt: a write whose first attempt already exceeds the budget wall
+    // clock would otherwise spend its entire life retrying, then hand the
+    // host a bare "context deadline exceeded" with nothing to show for it.
+    this.defaultWriteDeadlineMs = (options.requestTimeoutMs ?? 20_000) + writeBudgetMs;
   }
 
   /** Static version/core info (spec §11: included in health/status). */

@@ -7,32 +7,42 @@ import (
 )
 
 // The S3 signing region resolves through: explicit profile region, then
-// AWS_REGION, then AWS_DEFAULT_REGION, then Litestream's own default.
+// AWS_REGION, then AWS_DEFAULT_REGION, then us-east-1. R2's dashboard
+// label "auto" is normalized away at every level: left in place, the SDK
+// signs ListObjects with a bogus region and the replica probe hangs.
 func TestResolveS3Region(t *testing.T) {
 	t.Setenv("AWS_REGION", "")
 	t.Setenv("AWS_DEFAULT_REGION", "")
 
-	if got := resolveS3Region("eu-west-1"); got != "eu-west-1" {
+	if got := normalizeS3Region("eu-west-1"); got != "eu-west-1" {
 		t.Fatalf("explicit region = %q, want eu-west-1", got)
 	}
 
 	t.Setenv("AWS_REGION", "us-west-2")
 	t.Setenv("AWS_DEFAULT_REGION", "ap-southeast-1")
-	if got := resolveS3Region(""); got != "us-west-2" {
+	if got := normalizeS3Region(""); got != "us-west-2" {
 		t.Fatalf("AWS_REGION fallback = %q, want us-west-2", got)
 	}
-	if got := resolveS3Region("eu-west-1"); got != "eu-west-1" {
+	if got := normalizeS3Region("eu-west-1"); got != "eu-west-1" {
 		t.Fatalf("explicit region must win over env: got %q", got)
 	}
 
 	t.Setenv("AWS_REGION", "")
-	if got := resolveS3Region(""); got != "ap-southeast-1" {
+	if got := normalizeS3Region(""); got != "ap-southeast-1" {
 		t.Fatalf("AWS_DEFAULT_REGION fallback = %q, want ap-southeast-1", got)
 	}
 
 	t.Setenv("AWS_DEFAULT_REGION", "")
-	if got := resolveS3Region(""); got != "" {
-		t.Fatalf("no region configured = %q, want empty", got)
+	if got := normalizeS3Region(""); got != "us-east-1" {
+		t.Fatalf("no region configured = %q, want us-east-1", got)
+	}
+	if got := normalizeS3Region("auto"); got != "us-east-1" {
+		t.Fatalf("dashboard label must not survive: got %q", got)
+	}
+
+	t.Setenv("AWS_REGION", "auto")
+	if got := normalizeS3Region(""); got != "us-east-1" {
+		t.Fatalf("auto in env must not survive: got %q", got)
 	}
 }
 

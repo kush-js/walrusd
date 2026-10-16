@@ -124,7 +124,7 @@ func (b *Bridge) ReplicaClient(dbKey, replicaPrefix string, p Profile) (litestre
 	client.SecretAccessKey = p.SecretAccessKey
 	client.Bucket = p.Bucket
 	client.Path = replicaPrefix
-	client.Region = resolveS3Region(p.Region)
+	client.Region = normalizeS3Region(p.Region)
 	if p.Endpoint != "" {
 		client.Endpoint = p.Endpoint
 		client.ForcePathStyle = true
@@ -132,19 +132,24 @@ func (b *Bridge) ReplicaClient(dbKey, replicaPrefix string, p Profile) (litestre
 	return client, nil
 }
 
-// resolveS3Region applies the S3 signing-region fallback chain: an explicit
-// profile region wins, then AWS_REGION, then AWS_DEFAULT_REGION. An empty
-// result lets Litestream decide (a bucket-region lookup for real S3, or
-// us-east-1 for a custom endpoint). Set AWS_REGION to pin signing for
-// deployments whose descriptor omits region.
-func resolveS3Region(explicit string) string {
-	if explicit != "" {
+// normalizeS3Region applies the S3 signing-region fallback chain and
+// normalizes R2's dashboard label. "auto" is what the R2 console shows,
+// not a signing region: left in place, the SDK signs ListObjects with a
+// bogus region and the replica probe hangs until the call deadline.
+// An empty result lets Litestream decide (a bucket-region lookup for real
+// S3, or us-east-1 for a custom endpoint). Set AWS_REGION to pin signing
+// for deployments whose descriptor omits region.
+func normalizeS3Region(explicit string) string {
+	if explicit != "" && explicit != "auto" {
 		return explicit
 	}
-	if region := os.Getenv("AWS_REGION"); region != "" {
+	if region := os.Getenv("AWS_REGION"); region != "" && region != "auto" {
 		return region
 	}
-	return os.Getenv("AWS_DEFAULT_REGION")
+	if region := os.Getenv("AWS_DEFAULT_REGION"); region != "" && region != "auto" {
+		return region
+	}
+	return "us-east-1"
 }
 
 func sanitize(s string) string {
