@@ -2,8 +2,8 @@
 // All SQLite/VFS/lease work happens in the Go core via the C ABI; this
 // wrapper only translates JSON envelopes to typed values and errors.
 
-import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 interface NativeAPI {
   load(path: string): void;
@@ -159,7 +159,23 @@ function loadNative(): NativeAPI {
   if (!addonPath) {
     throw new Error("@walrusd/db: native addon not built. Run `npm run build`.");
   }
-  const native: NativeAPI = require(addonPath);
+  let native: NativeAPI;
+  try {
+    native = require(addonPath);
+  } catch (e) {
+    // The prebuilds are glibc binaries. On musl (Alpine) the glibc loader
+    // itself is absent, so dlopen fails naming ld-linux. Translate that
+    // into the actual cause and the two ways out; every other load failure
+    // passes through untouched.
+    if (process.platform === "linux" && e instanceof Error && /ld-linux/.test(e.message)) {
+      throw new Error(
+        "@walrusd/db: prebuilt binaries require glibc; this host runs musl (e.g. Alpine). " +
+          "Use a glibc base image (e.g. oven/bun:1.3.14, not -alpine), or build from source: " +
+          "go build -buildmode=c-shared -tags vfs -o libwalrusd.so ./bindings/c/lib && npm run build.",
+      );
+    }
+    throw e;
+  }
   // Locate the bundled shared library (Go core).
   const libCandidates = [
     join(platformDir(), "libwalrusd.dylib"),

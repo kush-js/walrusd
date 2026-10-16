@@ -18,6 +18,10 @@ npm install @walrusd/db
 The published package includes prebuilt native artifacts for `linux-x64`
 and `linux-arm64` under `prebuilds/<platform>-<arch>/`. Both
 `walrusd.node` and `libwalrusd.so` must be present for the host platform.
+The prebuilds are **glibc** binaries: on musl systems (e.g. Alpine) the
+loader itself is absent, and the binding fails fast naming the cause
+rather than surfacing the raw `dlopen` path error. Use a glibc base image
+(e.g. `oven/bun:1.3.14`, not `-alpine`) or build from source.
 Other platforms must build from source with Go and CGO enabled.
 
 ## Minimal Example
