@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4
+
+- Rebuilt prebuilds from the 0.5.3 sources: the 0.5.3 npm tarball shipped a stale `libwalrusd.so` predating the `HasLTX` replica-client reuse fix, so the stall persisted despite the version bump. No code change beyond the rebuild.
+
 ## 0.5.3
 
 - Reused the database's own S3 replica client in the `HasLTX` empty-replica probe instead of constructing a fresh client per read. The fresh client paid SDK config load, credential resolution, and a new HTTP connection on every content read, stalling the probe past all deadlines under load (every read degraded to `DB_REMOTE_UNAVAILABLE`). No API change.
