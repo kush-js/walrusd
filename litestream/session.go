@@ -85,10 +85,9 @@ func (s *Session) Key() string { return s.dbVFS.Key }
 // client pays for SDK config load, credential resolution, and a new
 // HTTP connection on every read, which stalls under load.
 //
-// The probe checks level 9 (snapshots) first, then level 0: CalcRestorePlan
-// lists level 9 before every level 0-8 on each VFS open, so an LTX file at
-// any level short-circuits the scan. Level-by-level listing also keeps
-// each LIST prefix-narrow instead of one broad recursive walk.
+// The probe checks level 0 (live tail) first, then the snapshot level:
+// a healthy replica answers on the first LIST, and level-by-level listing
+// keeps each LIST prefix-narrow instead of one broad recursive walk.
 func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 	client := d.wrapper.client
 	if err := client.Init(ctx); err != nil {
