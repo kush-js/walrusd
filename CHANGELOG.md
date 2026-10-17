@@ -1,6 +1,11 @@
 # Changelog
 
+## 0.5.8
+
+- Isolated the empty-replica probe's per-level timeouts: both level LISTs shared one 5s context, so a stalled level-9 page fired the deadline and level 0 inherited the expired context, failing instantly. Each level now gets its own 5s timeout.
+
 ## 0.5.7
+
 
 - `HasLTX` empty-replica probe checks the snapshot level (9) before level 0, matching the order `CalcRestorePlan` lists on every VFS open. A snapshot short-circuits the scan; each LIST stays prefix-narrow.
 
