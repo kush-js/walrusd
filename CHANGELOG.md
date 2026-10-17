@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.7
+
+- `HasLTX` empty-replica probe checks the snapshot level (9) before level 0, matching the order `CalcRestorePlan` lists on every VFS open. A snapshot short-circuits the scan; each LIST stays prefix-narrow.
+
 ## 0.5.6
 
 - Fixed a data race between VFS registration and SQLite VFS dispatch: the process-global registry guard was an `RWMutex` held as a read lock across opens, which does not exclude a concurrent `RegisterVFS` writer (upstream keeps its map without a lock of its own). Every holder now takes the full mutex. Also reverted the helper-goroutine open guard, which raced the same way — acquisition stays on the caller, bounded by its context deadline.
