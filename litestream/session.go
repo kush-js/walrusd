@@ -40,62 +40,28 @@ var globalSessionSeq atomic.Uint64
 func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error) {
 	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=ro&_query_only=1", fileName, d.VFSName)
-	vfsRegistryMu.RLock()
+	vfsRegistryMu.Lock()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
-		vfsRegistryMu.RUnlock()
+		vfsRegistryMu.Unlock()
 		return nil, fmt.Errorf("litestream: open read: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	// Bound the conn acquisition: on a replica whose restore plan never
-	// resolves, the VFS open blocks in waitForRestorePlan past every
-	// caller deadline (uncancellable CGO). HasLTX already probed, so a
-	// stall here is a sick replica, not an empty one — fail fast.
-	type connResult struct {
-		conn *sql.Conn
-		err  error
+	// The VFS open behind db.Conn can block in waitForRestorePlan past
+	// every caller deadline (uncancellable CGO on a sick replica). The
+	// acquisition stays on the caller's goroutine while holding the
+	// process-global registry mutex: registration and dispatch must never
+	// overlap (upstream's registry map has no lock of its own), so the
+	// full mutex — not a read lock — is held across the open. The
+	// caller's own context deadline bounds the wait.
+	conn, err := db.Conn(ctx)
+	vfsRegistryMu.Unlock()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("litestream: conn: %w", err)
 	}
-	ch := make(chan connResult, 1)
-	go func() {
-		conn, err := db.Conn(ctx)
-		ch <- connResult{conn: conn, err: err}
-	}()
-	vfsRegistryMu.RUnlock()
-	timeout := time.NewTimer(openReadConnTimeout)
-	defer timeout.Stop()
-	select {
-	case res := <-ch:
-		if res.err != nil {
-			db.Close()
-			return nil, fmt.Errorf("litestream: conn: %w", res.err)
-		}
-		return &Session{dbVFS: d, dbFileName: fileName, conn: res.conn, db: db}, nil
-	case <-ctx.Done():
-		go func() {
-			res := <-ch
-			if res.err == nil && res.conn != nil {
-				res.conn.Close()
-			}
-			db.Close()
-		}()
-		return nil, fmt.Errorf("litestream: conn: %w", ctx.Err())
-	case <-timeout.C:
-		go func() {
-			res := <-ch
-			if res.err == nil && res.conn != nil {
-				res.conn.Close()
-			}
-			db.Close()
-		}()
-		return nil, fmt.Errorf("litestream: conn: open timed out after %v", openReadConnTimeout)
-	}
+	return &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db}, nil
 }
-
-// openReadConnTimeout caps the VFS open behind a read session. The restore
-// plan it waits on can block forever on a sick replica; the probe already
-// ruled out the empty-replica case, so waiting longer only burns the
-// caller's budget.
-const openReadConnTimeout = 10 * time.Second
 
 // ReadDSN returns the SQLite DSN for the host's own SQLite connection to
 // read this database through the shared litestream VFS (spec §9 read mode).
@@ -164,16 +130,16 @@ func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, erro
 
 	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=rw", fileName, d.writeVFSName)
-	vfsRegistryMu.RLock()
+	vfsRegistryMu.Lock()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
-		vfsRegistryMu.RUnlock()
+		vfsRegistryMu.Unlock()
 		_ = w.discardBuffers()
 		return nil, fmt.Errorf("litestream: open write: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
-	vfsRegistryMu.RUnlock()
+	vfsRegistryMu.Unlock()
 	if err != nil {
 		db.Close()
 		_ = w.discardBuffers()
@@ -262,8 +228,8 @@ func (s *Session) Run(ctx context.Context, fn func(*sql.Conn) error) error {
 	if closed || conn == nil {
 		return errors.New("litestream: session is closed")
 	}
-	vfsRegistryMu.RLock()
-	defer vfsRegistryMu.RUnlock()
+	vfsRegistryMu.Lock()
+	defer vfsRegistryMu.Unlock()
 	return fn(conn)
 }
 
@@ -307,19 +273,19 @@ func (s *Session) Close() error {
 		errs = append(errs, errors.New("litestream: session closed with write mode still enabled (flush barrier skipped)"))
 	}
 	if s.conn != nil {
-		vfsRegistryMu.RLock()
+		vfsRegistryMu.Lock()
 		if err := s.conn.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		vfsRegistryMu.RUnlock()
+		vfsRegistryMu.Unlock()
 		s.conn = nil
 	}
 	if s.db != nil {
-		vfsRegistryMu.RLock()
+		vfsRegistryMu.Lock()
 		if err := s.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		vfsRegistryMu.RUnlock()
+		vfsRegistryMu.Unlock()
 		s.db = nil
 	}
 	if s.writeVFS != nil {

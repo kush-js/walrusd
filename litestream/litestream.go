@@ -65,10 +65,13 @@ type Bridge struct {
 // other's databases.
 var globalVFSSeq atomic.Uint64
 
-// vfsRegistryMu serializes sqlite3vfs.RegisterVFS writes with SQLite VFS
-// callbacks. sqlite3vfs's process-global vfsMap has no mutex of its own.
+// vfsRegistryMu serializes sqlite3vfs.RegisterVFS with every SQLite VFS
+// callback. sqlite3vfs's process-global vfsMap has no mutex of its own, so
+// a plain RWMutex is wrong here: CGO dispatches VFS opens concurrently
+// with registration, and a read lock does not exclude the writer. Every
+// holder takes the full mutex, so registration and dispatch never overlap.
 var (
-	vfsRegistryMu    sync.RWMutex
+	vfsRegistryMu    sync.Mutex
 	vfsRegistrations atomic.Uint64
 )
 

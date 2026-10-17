@@ -57,8 +57,8 @@ func findSQLiteVFS(name string) *C.sqlite3_vfs {
 }
 
 func sqliteVFSRegistered(name string) bool {
-	vfsRegistryMu.RLock()
-	defer vfsRegistryMu.RUnlock()
+	vfsRegistryMu.Lock()
+	defer vfsRegistryMu.Unlock()
 	return findSQLiteVFS(name) != nil
 }
 

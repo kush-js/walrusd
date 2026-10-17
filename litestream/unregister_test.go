@@ -34,9 +34,9 @@ func TestUnregisterVFS(t *testing.T) {
 	if !sqliteVFSRegistered(name) {
 		t.Fatal("sqlite3_vfs_find did not find registered VFS")
 	}
-	vfsRegistryMu.RLock()
+	vfsRegistryMu.Lock()
 	_, inMap := vfsMap[name]
-	vfsRegistryMu.RUnlock()
+	vfsRegistryMu.Unlock()
 	if !inMap {
 		t.Fatal("registered VFS missing from sqlite3vfs map")
 	}
@@ -50,9 +50,9 @@ func TestUnregisterVFS(t *testing.T) {
 	if sqliteVFSRegistered(name) {
 		t.Fatal("sqlite3_vfs_find still found unregistered VFS")
 	}
-	vfsRegistryMu.RLock()
+	vfsRegistryMu.Lock()
 	_, inMap = vfsMap[name]
-	vfsRegistryMu.RUnlock()
+	vfsRegistryMu.Unlock()
 	if inMap {
 		t.Fatal("unregistered VFS remains in sqlite3vfs map")
 	}
