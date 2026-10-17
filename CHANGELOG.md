@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3
+
+- Reused the database's own S3 replica client in the `HasLTX` empty-replica probe instead of constructing a fresh client per read. The fresh client paid SDK config load, credential resolution, and a new HTTP connection on every content read, stalling the probe past all deadlines under load (every read degraded to `DB_REMOTE_UNAVAILABLE`). No API change.
+
 ## 0.5.0
 
 - Added an in-process `memory` storage provider (`litestream.Profile{Provider: "memory"}`): a litestream replica held in a process-global map with no object storage and no network. Unit tests now exercise the full lease/transaction/flush/read path without MinIO and Redis, and multiple runtimes in one process share the replica like separate API instances share a bucket. State is lost on exit.
