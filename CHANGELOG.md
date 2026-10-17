@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.5
+
+- Capped the empty-replica `HasLTX` probe (5s) and the read-mode VFS open behind `OpenRead` (10s). Both could stall past every caller deadline on a sick replica, wedging all content reads until the whole call budget burned. Sick replicas now fail fast with a clear error.
+
 ## 0.5.4
 
 - Rebuilt prebuilds from the 0.5.3 sources: the 0.5.3 npm tarball shipped a stale `libwalrusd.so` predating the `HasLTX` replica-client reuse fix, so the stall persisted despite the version bump. No code change beyond the rebuild.
