@@ -1,6 +1,11 @@
 # Changelog
 
+## 0.5.11
+
+- Run the empty-replica probe's first-page LIST on its own goroutine with a timeout race: the SDK paginator only watches its context between retries, so a hung response body stalls inside one attempt past every deadline.
+
 ## 0.5.10
+
 
 - Empty-replica probe timeout 5s to 12s: the first LIST pays connection setup and the store's tail latency, tripping 5s while warm probes answer in ~100ms. Stays inside the 15s native attempt budget.
 
