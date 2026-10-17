@@ -16,7 +16,8 @@ import (
 // file so the runtime can drive the flush barrier on the exact file the
 // SQLite connection uses (spec §8).
 type wrapperVFS struct {
-	inner *ls.VFS
+	client ls.ReplicaClient
+	inner  *ls.VFS
 
 	fileMu sync.Mutex
 	files  map[string]*ls.VFSFile // filename -> file
@@ -130,6 +131,7 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 
 func (b *Bridge) newWrapperVFS(client ls.ReplicaClient, write bool) *wrapperVFS {
 	w := &wrapperVFS{
+		client:     client,
 		inner:      ls.NewVFS(client, noOpLogger()),
 		files:      make(map[string]*ls.VFSFile),
 		tempFiles:  make(map[string]string),

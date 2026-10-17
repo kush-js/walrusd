@@ -71,11 +71,13 @@ func (s *Session) Key() string { return s.dbVFS.Key }
 // HasLTX reports whether the replica holds any LTX files. A read-mode VFS
 // open on a zero-LTX replica blocks forever in waitForRestorePlan, so
 // callers must probe first and serve the empty-DB fast path instead.
+//
+// The probe reuses the database's own replica client behind the shared
+// read VFS instead of constructing a fresh client per call: a fresh
+// client pays for SDK config load, credential resolution, and a new
+// HTTP connection on every read, which stalls under load.
 func (d *Database) HasLTX(ctx context.Context) (bool, error) {
-	client, err := d.Bridge.ReplicaClient(d.Key, d.ReplicaPrefix, d.Profile)
-	if err != nil {
-		return false, fmt.Errorf("litestream: replica client: %w", err)
-	}
+	client := d.wrapper.client
 	if err := client.Init(ctx); err != nil {
 		return false, fmt.Errorf("litestream: init replica client: %w", err)
 	}
