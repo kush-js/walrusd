@@ -1,6 +1,11 @@
 # Changelog
 
+## 0.5.9
+
+- Probe level 0 before the snapshot level: the live tail answers healthy replicas on the first LIST instead of paying a wasted level-9 scan.
+
 ## 0.5.8
+
 
 - Isolated the empty-replica probe's per-level timeouts: both level LISTs shared one 5s context, so a stalled level-9 page fired the deadline and level 0 inherited the expired context, failing instantly. Each level now gets its own 5s timeout.
 
