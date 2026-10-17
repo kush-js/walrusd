@@ -1,6 +1,11 @@
 # Changelog
 
+## 0.5.10
+
+- Empty-replica probe timeout 5s to 12s: the first LIST pays connection setup and the store's tail latency, tripping 5s while warm probes answer in ~100ms. Stays inside the 15s native attempt budget.
+
 ## 0.5.9
+
 
 - Probe level 0 before the snapshot level: the live tail answers healthy replicas on the first LIST instead of paying a wasted level-9 scan.
 
