@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.6
+
+- Fixed a data race between VFS registration and SQLite VFS dispatch: the process-global registry guard was an `RWMutex` held as a read lock across opens, which does not exclude a concurrent `RegisterVFS` writer (upstream keeps its map without a lock of its own). Every holder now takes the full mutex. Also reverted the helper-goroutine open guard, which raced the same way — acquisition stays on the caller, bounded by its context deadline.
+
 ## 0.5.5
 
 - Capped the empty-replica `HasLTX` probe (5s) and the read-mode VFS open behind `OpenRead` (10s). Both could stall past every caller deadline on a sick replica, wedging all content reads until the whole call budget burned. Sick replicas now fail fast with a clear error.
