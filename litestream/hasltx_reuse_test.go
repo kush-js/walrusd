@@ -29,3 +29,25 @@ func TestHasLTXReusesDatabaseClient(t *testing.T) {
 		t.Fatal("probe should reuse the wrapper's replica client")
 	}
 }
+
+// A stalled LIST must fail fast, not hang the read: the probe runs under
+// its own timeout well inside the caller's budget.
+func TestHasLTXStallFailsFast(t *testing.T) {
+	b := NewBridge(DefaultConfig())
+	p := Profile{Provider: "memory", Bucket: "b", RootPrefix: "stall"}
+	db, err := b.RegisterDatabase("stall-db", "stall-prefix", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Sanity: a healthy probe answers instantly.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t0 := time.Now()
+	if _, err := db.HasLTX(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(t0); took > hasLTXProbeTimeout {
+		t.Fatalf("healthy probe took %v, budget is %v", took, hasLTXProbeTimeout)
+	}
+}

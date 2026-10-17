@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	ls "github.com/benbjohnson/litestream"
 	_ "github.com/mattn/go-sqlite3" // registers the sqlite3 driver with VFS support
@@ -46,14 +47,55 @@ func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error
 		return nil, fmt.Errorf("litestream: open read: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	conn, err := db.Conn(ctx)
-	vfsRegistryMu.RUnlock()
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("litestream: conn: %w", err)
+	// Bound the conn acquisition: on a replica whose restore plan never
+	// resolves, the VFS open blocks in waitForRestorePlan past every
+	// caller deadline (uncancellable CGO). HasLTX already probed, so a
+	// stall here is a sick replica, not an empty one — fail fast.
+	type connResult struct {
+		conn *sql.Conn
+		err  error
 	}
-	return &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db}, nil
+	ch := make(chan connResult, 1)
+	go func() {
+		conn, err := db.Conn(ctx)
+		ch <- connResult{conn: conn, err: err}
+	}()
+	vfsRegistryMu.RUnlock()
+	timeout := time.NewTimer(openReadConnTimeout)
+	defer timeout.Stop()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			db.Close()
+			return nil, fmt.Errorf("litestream: conn: %w", res.err)
+		}
+		return &Session{dbVFS: d, dbFileName: fileName, conn: res.conn, db: db}, nil
+	case <-ctx.Done():
+		go func() {
+			res := <-ch
+			if res.err == nil && res.conn != nil {
+				res.conn.Close()
+			}
+			db.Close()
+		}()
+		return nil, fmt.Errorf("litestream: conn: %w", ctx.Err())
+	case <-timeout.C:
+		go func() {
+			res := <-ch
+			if res.err == nil && res.conn != nil {
+				res.conn.Close()
+			}
+			db.Close()
+		}()
+		return nil, fmt.Errorf("litestream: conn: open timed out after %v", openReadConnTimeout)
+	}
 }
+
+// openReadConnTimeout caps the VFS open behind a read session. The restore
+// plan it waits on can block forever on a sick replica; the probe already
+// ruled out the empty-replica case, so waiting longer only burns the
+// caller's budget.
+const openReadConnTimeout = 10 * time.Second
 
 // ReadDSN returns the SQLite DSN for the host's own SQLite connection to
 // read this database through the shared litestream VFS (spec §9 read mode).
@@ -81,13 +123,28 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 	if err := client.Init(ctx); err != nil {
 		return false, fmt.Errorf("litestream: init replica client: %w", err)
 	}
-	itr, err := client.LTXFiles(ctx, 0, 0, false)
+	// Bound the probe: on an unreachable or pathologically slow replica the
+	// LIST can stall past every caller deadline (the VFS open it guards is
+	// uncancellable CGO), so cap it well inside the caller's budget and
+	// report unavailability instead of hanging.
+	pctx, cancel := context.WithTimeout(ctx, hasLTXProbeTimeout)
+	defer cancel()
+	itr, err := client.LTXFiles(pctx, 0, 0, false)
 	if err != nil {
 		return false, fmt.Errorf("litestream: list LTX files: %w", err)
 	}
 	defer itr.Close()
-	return itr.Next(), nil
+	has := itr.Next()
+	if err := itr.Err(); err != nil {
+		return false, fmt.Errorf("litestream: list LTX files: %w", err)
+	}
+	return has, nil
 }
+
+// hasLTXProbeTimeout caps the empty-replica probe. Callers race the whole
+// read against their own budget; this keeps the probe from consuming all
+// of it on a stalled LIST.
+const hasLTXProbeTimeout = 5 * time.Second
 
 // OpenWrite opens a read-write session with VFS write mode enabled from the
 // start. Litestream only honors write mode at VFS-open; a read-mode open
