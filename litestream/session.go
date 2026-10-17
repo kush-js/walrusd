@@ -97,17 +97,21 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 	// Bound the probe: on an unreachable or pathologically slow replica the
 	// LIST can stall past every caller deadline (the VFS open it guards is
 	// uncancellable CGO), so cap it well inside the caller's budget and
-	// report unavailability instead of hanging.
-	pctx, cancel := context.WithTimeout(ctx, hasLTXProbeTimeout)
-	defer cancel()
+	// report unavailability instead of hanging. Each level gets its own
+	// timeout: a stalled first page must not consume the second level's
+	// budget, and a fired level-9 deadline must not poison the level-0
+	// iterator (its paginator shares the iterator context).
 	for _, level := range []int{9, 0} {
-		itr, err := client.LTXFiles(pctx, level, 0, false)
+		lctx, lcancel := context.WithTimeout(ctx, hasLTXProbeTimeout)
+		itr, err := client.LTXFiles(lctx, level, 0, false)
 		if err != nil {
+			lcancel()
 			return false, fmt.Errorf("litestream: list LTX files: %w", err)
 		}
 		has := itr.Next()
 		iterErr := itr.Err()
 		itr.Close()
+		lcancel()
 		if iterErr != nil {
 			return false, fmt.Errorf("litestream: list LTX files: %w", iterErr)
 		}
