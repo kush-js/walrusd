@@ -7,6 +7,7 @@ package litestream
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -123,6 +124,12 @@ func (b *Bridge) ReplicaClient(dbKey, replicaPrefix string, p Profile) (litestre
 		return nil, fmt.Errorf("litestream: unsupported provider %q", p.Provider)
 	}
 	client := s3.NewReplicaClient()
+	// SDK request/retry logs go to stderr when LITESTREAM_S3_DEBUG is set;
+	// the VFS logger discards everything, which hides the stalled stage.
+	// TEMPORARY instrumentation for the production probe stall.
+	if os.Getenv("LITESTREAM_S3_DEBUG") != "" {
+		client.SetLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
 	client.AccessKeyID = p.AccessKeyID
 	client.SecretAccessKey = p.SecretAccessKey
 	client.Bucket = p.Bucket
