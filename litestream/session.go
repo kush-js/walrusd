@@ -104,23 +104,46 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 	// first LIST; the snapshot level is only a fallback.
 	for _, level := range []int{0, 9} {
 		lctx, lcancel := context.WithTimeout(ctx, hasLTXProbeTimeout)
-		itr, err := client.LTXFiles(lctx, level, 0, false)
-		if err != nil {
-			lcancel()
-			return false, fmt.Errorf("litestream: list LTX files: %w", err)
-		}
-		has := itr.Next()
-		iterErr := itr.Err()
-		itr.Close()
+		has, err := hasLTXLevel(lctx, client, level)
 		lcancel()
-		if iterErr != nil {
-			return false, fmt.Errorf("litestream: list LTX files: %w", iterErr)
+		if err != nil {
+			return false, err
 		}
 		if has {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// hasLTXLevel reports whether any LTX file exists at one level. Next()
+// runs on its own goroutine so a stalled first page cannot trap the probe
+// past its timeout: the SDK paginator only watches its context between
+// retries, and a hung response body can stall inside one attempt forever.
+func hasLTXLevel(ctx context.Context, client ls.ReplicaClient, level int) (bool, error) {
+	itr, err := client.LTXFiles(ctx, level, 0, false)
+	if err != nil {
+		return false, fmt.Errorf("litestream: list LTX files: %w", err)
+	}
+	defer itr.Close()
+	type result struct {
+		has bool
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		has := itr.Next()
+		ch <- result{has: has, err: itr.Err()}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return false, fmt.Errorf("litestream: list LTX files: %w", r.err)
+		}
+		return r.has, nil
+	case <-ctx.Done():
+		return false, fmt.Errorf("litestream: list LTX files: %w", ctx.Err())
+	}
 }
 
 // hasLTXProbeTimeout caps the empty-replica probe. Callers race the whole
