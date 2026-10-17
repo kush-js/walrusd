@@ -99,9 +99,11 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 	// uncancellable CGO), so cap it well inside the caller's budget and
 	// report unavailability instead of hanging. Each level gets its own
 	// timeout: a stalled first page must not consume the second level's
-	// budget, and a fired level-9 deadline must not poison the level-0
-	// iterator (its paginator shares the iterator context).
-	for _, level := range []int{9, 0} {
+	// budget, and a fired deadline must not poison the next iterator (its
+	// paginator shares the iterator context). Level 0 first: it holds the
+	// live tail on every database, so a healthy replica answers on the
+	// first LIST; the snapshot level is only a fallback.
+	for _, level := range []int{0, 9} {
 		lctx, lcancel := context.WithTimeout(ctx, hasLTXProbeTimeout)
 		itr, err := client.LTXFiles(lctx, level, 0, false)
 		if err != nil {
