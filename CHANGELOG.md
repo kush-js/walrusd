@@ -1,6 +1,11 @@
 # Changelog
 
+## 0.5.12
+
+- Reverted two guards added while chasing a stall that turned out to live elsewhere (the deployment image shipped no CA certificates, so Go could not verify the object store over TLS). The probe timeout is back to 5s: a healthy replica answers in ~500ms, and the larger budget only delayed the report of a stall. The probe also calls the SDK iterator directly again instead of on a watched goroutine — the iterator context already reaches the HTTP request, so the goroutine guarded nothing and could leak one per stalled probe.
+
 ## 0.5.11
+
 
 - Run the empty-replica probe's first-page LIST on its own goroutine with a timeout race: the SDK paginator only watches its context between retries, so a hung response body stalls inside one attempt past every deadline.
 
