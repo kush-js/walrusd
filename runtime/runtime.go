@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -355,13 +354,7 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 	// blocks forever in Litestream's waitForRestorePlan (uncancellable
 	// CGO). Probe first; with no flushed state the database is empty by
 	// definition, so serve fn an empty query-only connection instead.
-	if os.Getenv("WALRUS_DEBUG_READS") != "" {
-		fmt.Fprintf(os.Stderr, "[walrus-debug] HasLTX start db=%s\n", metricsID)
-	}
 	has, err := vfs.HasLTX(ctx)
-	if os.Getenv("WALRUS_DEBUG_READS") != "" {
-		fmt.Fprintf(os.Stderr, "[walrus-debug] HasLTX done db=%s has=%v err=%v\n", metricsID, has, err)
-	}
 	if err != nil {
 		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "probe replica", err)
 	}

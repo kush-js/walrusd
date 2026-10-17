@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -130,14 +129,6 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	defer cancel()
 
 	d := ddescriptor(r.Descriptor)
-	if os.Getenv("WALRUS_DEBUG_READS") != "" {
-		start := time.Now()
-		dbID, _ := d.Identity()
-		fmt.Fprintf(os.Stderr, "[walrus-debug] read start db=%s sql=%.60q\n", dbID.String(), r.SQL)
-		defer func() {
-			fmt.Fprintf(os.Stderr, "[walrus-debug] read done db=%s in=%v\n", dbID.String(), time.Since(start))
-		}()
-	}
 	var res ReadResult
 	err := a.rt.WithRead(cctx, d, func(conn *sql.Conn) error {
 		rows, err := conn.QueryContext(cctx, r.SQL, r.Params...)
