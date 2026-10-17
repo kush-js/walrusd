@@ -127,7 +127,7 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 // hasLTXProbeTimeout caps the empty-replica probe. Callers race the whole
 // read against their own budget; this keeps the probe from consuming all
 // of it on a stalled LIST.
-const hasLTXProbeTimeout = 5 * time.Second
+const hasLTXProbeTimeout = 12 * time.Second
 
 // OpenWrite opens a read-write session with VFS write mode enabled from the
 // start. Litestream only honors write mode at VFS-open; a read-mode open
