@@ -120,15 +120,18 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 	if err != nil {
 		return nil, err
 	}
-	cached := newCachingClient(client, dbKey, b.files)
-	w := b.newWrapperVFS(cached, false)
+	shared := client
+	if b.files != nil {
+		shared = newCachingClient(client, dbKey, b.files)
+	}
+	w := b.newWrapperVFS(shared, false)
 	// Litestream requires a positive poll interval (its monitor builds a
 	// ticker from it) and a positive sync interval when write mode is on.
 	name := fmt.Sprintf("walrusd_%d", globalVFSSeq.Add(1))
 	if err := registerVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register vfs %s: %w", name, err)
 	}
-	return &Database{Bridge: b, VFSName: name, Key: dbKey, ReplicaPrefix: replicaPrefix, Profile: p, wrapper: w, client: cached}, nil
+	return &Database{Bridge: b, VFSName: name, Key: dbKey, ReplicaPrefix: replicaPrefix, Profile: p, wrapper: w, client: shared}, nil
 }
 
 func (b *Bridge) newWrapperVFS(client ls.ReplicaClient, write bool) *wrapperVFS {
@@ -191,7 +194,9 @@ func (d *Database) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	d.Bridge.files.dropDB(d.Key)
+	if d.Bridge.files != nil {
+		d.Bridge.files.dropDB(d.Key)
+	}
 	return errors.Join(errs...)
 }
 

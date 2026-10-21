@@ -118,6 +118,11 @@ export interface RuntimeOptions {
   readInstanceIdleTtlMs?: number;
   /** Per-database SQLite page cache size in bytes. Default: 10485760 (10 MiB). */
   vfsPageCacheBytes?: number;
+  /** Bytes of immutable LTX replica data (files and level listings) cached
+   *  per runtime. Default: 33554432 (32 MiB), evicted LRU. Set 0 to disable:
+   *  every VFS open re-reads the replica, trading latency for memory when the
+   *  host process has better uses for it. */
+  replicaCacheBytes?: number;
   /** Background VFS sync interval in milliseconds. Default: 1000. The
    *  mandatory flush before lease release remains authoritative. */
   writeSyncIntervalMs?: number;
@@ -257,6 +262,7 @@ export class WalrusdDatabase {
           max_read_instances: options.maxReadInstances,
           read_instance_idle_ttl_ms: options.readInstanceIdleTtlMs,
           vfs_page_cache_bytes: options.vfsPageCacheBytes,
+          replica_cache_bytes: options.replicaCacheBytes,
           write_sync_interval_ms: options.writeSyncIntervalMs,
           max_temp_write_buffer: options.maxTempWriteBuffer,
           redis_address: options.redisAddress,

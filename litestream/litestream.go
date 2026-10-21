@@ -38,6 +38,11 @@ type Config struct {
 	HydrationEnabled    bool // must be false in normal operation (invariant 11)
 	WriteBufferRootPath string
 	MaxTempWriteBuffer  int64 // per-process temp write-buffer cap; <= 0 disables
+	// ReplicaCacheBytes bounds the per-runtime cache of immutable LTX files
+	// and compaction-level listings. <= 0 disables it: every VFS open re-reads
+	// the replica, so memory stays with the host process at the cost of the
+	// reads the cache would have served.
+	ReplicaCacheBytes int64
 }
 
 // DefaultConfig returns the starting configuration from spec §16.
@@ -47,6 +52,7 @@ func DefaultConfig() Config {
 		VFSPageCacheBytes:  10 * 1024 * 1024,
 		HydrationEnabled:   false,
 		MaxTempWriteBuffer: 268435456,
+		ReplicaCacheBytes:  defaultFileCacheBytes,
 	}
 }
 
@@ -95,12 +101,15 @@ func NewBridge(cfg Config) *Bridge {
 	if cfg.WriteSyncInterval == 0 {
 		cfg = DefaultConfig()
 	}
-	return &Bridge{
+	b := &Bridge{
 		cfg:     cfg,
 		names:   make(map[string]string),
 		buffers: &tempBudget{limit: cfg.MaxTempWriteBuffer},
-		files:   newFileCache(defaultFileCacheBytes),
 	}
+	if cfg.ReplicaCacheBytes > 0 {
+		b.files = newFileCache(cfg.ReplicaCacheBytes)
+	}
+	return b
 }
 
 // ReplicaClient builds a Litestream replica client rooted at the

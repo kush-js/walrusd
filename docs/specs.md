@@ -263,6 +263,7 @@ runtime:
   read_instance_idle_ttl: 60s
   max_read_instances: 200
   vfs_page_cache_bytes: 10485760
+  replica_cache_bytes: 33554432
   max_total_cache_bytes: 2147483648
   max_temp_write_buffer_bytes: 268435456
   hydration_enabled: false

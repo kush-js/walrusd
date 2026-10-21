@@ -82,3 +82,15 @@ func TestReplicaClientMemoryProvider(t *testing.T) {
 		t.Fatalf("client type = %q, want memory", client.Type())
 	}
 }
+
+func TestNewBridge_ReplicaCacheOption(t *testing.T) {
+	if b := NewBridge(DefaultConfig()); b.files == nil {
+		t.Fatal("default bridge has no replica cache")
+	}
+
+	cfg := DefaultConfig()
+	cfg.ReplicaCacheBytes = 0
+	if b := NewBridge(cfg); b.files != nil {
+		t.Fatal("replica cache allocated when disabled")
+	}
+}

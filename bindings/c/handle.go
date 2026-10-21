@@ -40,6 +40,7 @@ type runtimeConfig struct {
 	VFSPageCacheBytes     *int     `json:"vfs_page_cache_bytes,omitempty"`
 	WriteSyncIntervalMs   *int64   `json:"write_sync_interval_ms,omitempty"`
 	MaxTempWriteBuffer    *int64   `json:"max_temp_write_buffer,omitempty"`
+	ReplicaCacheBytes     *int64   `json:"replica_cache_bytes,omitempty"`
 	// Redis backing for leases (shared deployments). Empty address falls
 	// back to an in-process memory store: fine for dev and single-process
 	// use, but it serializes only within this handle — cross-process
@@ -139,6 +140,9 @@ func buildRuntimeConfig(r runtimeConfig) runtime.Config {
 	}
 	if v := r.MaxTempWriteBuffer; v != nil {
 		cfg.MaxTempWriteBuffer = *v
+	}
+	if v := r.ReplicaCacheBytes; v != nil {
+		cfg.Litestream.ReplicaCacheBytes = *v
 	}
 	return cfg
 }
