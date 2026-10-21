@@ -107,6 +107,7 @@ type Database struct {
 	ReplicaPrefix string  // object-store replica prefix
 	Profile       Profile // trusted storage profile (credentials resolved)
 	wrapper       *wrapperVFS
+	client        ls.ReplicaClient // shared by the read and write VFS
 
 	writeMu      sync.Mutex
 	writeVFSName string
@@ -119,14 +120,15 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 	if err != nil {
 		return nil, err
 	}
-	w := b.newWrapperVFS(client, false)
+	cached := newCachingClient(client, dbKey, b.files)
+	w := b.newWrapperVFS(cached, false)
 	// Litestream requires a positive poll interval (its monitor builds a
 	// ticker from it) and a positive sync interval when write mode is on.
 	name := fmt.Sprintf("walrusd_%d", globalVFSSeq.Add(1))
 	if err := registerVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register vfs %s: %w", name, err)
 	}
-	return &Database{Bridge: b, VFSName: name, Key: dbKey, ReplicaPrefix: replicaPrefix, Profile: p, wrapper: w}, nil
+	return &Database{Bridge: b, VFSName: name, Key: dbKey, ReplicaPrefix: replicaPrefix, Profile: p, wrapper: w, client: cached}, nil
 }
 
 func (b *Bridge) newWrapperVFS(client ls.ReplicaClient, write bool) *wrapperVFS {
@@ -153,11 +155,7 @@ func (d *Database) ensureWriteVFS() (*wrapperVFS, error) {
 	if d.writeWrapper != nil {
 		return d.writeWrapper, nil
 	}
-	client, err := d.Bridge.ReplicaClient(d.Key, d.ReplicaPrefix, d.Profile)
-	if err != nil {
-		return nil, fmt.Errorf("litestream: replica client: %w", err)
-	}
-	w := d.Bridge.newWrapperVFS(client, true)
+	w := d.Bridge.newWrapperVFS(d.client, true)
 	name := fmt.Sprintf("walrusd_w%d", globalVFSSeq.Add(1))
 	if err := registerVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register write vfs %s: %w", name, err)
@@ -193,6 +191,7 @@ func (d *Database) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	d.Bridge.files.dropDB(d.Key)
 	return errors.Join(errs...)
 }
 

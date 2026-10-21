@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Cache immutable LTX files and stable level listings per database. Litestream re-reads the header, page index, and trailer of every file in the replica chain on each VFS open (seven ranged GETs per file) plus one LIST per compaction level; writes are not session-cached and WALrus does not compact, so every write paid the whole chain and got slower as the chain grew. Against SeaweedFS with 30ms injected latency, a nine-operation sequence dropped from 158 S3 requests to 29 and from 0.75-1.0s per write (rising with chain length) to a flat ~150ms; a cold read went from ~0.98s to ~0.09s. Levels 1-9 listings are cached for 30s (only a compactor writes them; an in-process write or delete invalidates its level); level 0 is always listed fresh. Files are cached by TXID and dropped on write/delete.
+
 ## 0.5.12
 
 - Reverted two guards added while chasing a stall that turned out to live elsewhere (the deployment image shipped no CA certificates, so Go could not verify the object store over TLS). The probe timeout is back to 5s: a healthy replica answers in ~500ms, and the larger budget only delayed the report of a stall. The probe also calls the SDK iterator directly again instead of on a watched goroutine — the iterator context already reaches the HTTP request, so the goroutine guarded nothing and could leak one per stalled probe.

@@ -57,6 +57,7 @@ type Bridge struct {
 	mu      sync.Mutex
 	names   map[string]string // database key -> registered vfs name
 	buffers *tempBudget
+	files   *fileCache // immutable LTX files shared by a database's VFSes
 }
 
 // globalVFSSeq issues process-wide unique VFS names. One process can host
@@ -98,6 +99,7 @@ func NewBridge(cfg Config) *Bridge {
 		cfg:     cfg,
 		names:   make(map[string]string),
 		buffers: &tempBudget{limit: cfg.MaxTempWriteBuffer},
+		files:   newFileCache(defaultFileCacheBytes),
 	}
 }
 
