@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.16
+
+- `HasLTX` now probes every compaction level, not just the live tail (0) and snapshot (9). Compaction writes deltas to levels 1..8, so a compacted database could have both 0 and 9 empty while holding data; reads then treated it as an empty database and failed with "no such table".
+- `MetricsTotal` sums the compaction counters, so `Compactions`/`CompactedLevels`/`CompactionFailures` no longer read as zero when a compaction ran.
+
 ## 0.5.15
 
 - Compact the replica chain under the write lease. Every `compaction_interval` writes, each level with more than `compaction_threshold` files is merged into the next (L0 through L8; L9 is Litestream's snapshot level and is never written by a merge), and merged sources are deleted after `compaction_retention_ms` so in-flight readers can finish. Without this the chain grew by one file per write forever, and every write re-read the whole chain.

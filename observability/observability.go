@@ -125,6 +125,9 @@ func (r *Registry) Total() Metrics {
 		total.FlushFailures += m.FlushFailures
 		total.FlushConflictErrors += m.FlushConflictErrors
 		total.FlushDurationMicros += m.FlushDurationMicros
+		total.Compactions += m.Compactions
+		total.CompactedLevels += m.CompactedLevels
+		total.CompactionFailures += m.CompactionFailures
 		total.IdempotencyDedupeHits += m.IdempotencyDedupeHits
 		total.IdempotencyAmbiguousOutcomes += m.IdempotencyAmbiguousOutcomes
 		total.ReadOpens += m.ReadOpens

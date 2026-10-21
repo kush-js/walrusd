@@ -97,14 +97,16 @@ func (d *Database) HasLTX(ctx context.Context) (bool, error) {
 	// LIST can stall past every caller deadline (the VFS open it guards is
 	// uncancellable CGO), so cap it well inside the caller's budget and
 	// report unavailability instead of hanging. Each level gets its own
-	// timeout: a stalled first level must not consume the second level's
+	// timeout: a stalled first level must not consume the next level's
 	// budget, and a fired deadline must not poison the next iterator (its
-	// paginator shares the iterator context). Level 0 first: it holds the
-	// live tail on every database, so a healthy replica answers on the
-	// first LIST; the snapshot level is only a fallback. The iterator's
-	// context reaches the HTTP request, so a stalled page is cancelled by
-	// this deadline rather than needing a watchdog around Next.
-	for _, level := range []int{0, 9} {
+	// paginator shares the iterator context). The live tail answers a
+	// healthy replica on the first LIST; the snapshot level is the second
+	// candidate. Compaction (which writes deltas to levels 1..8) can leave
+	// both empty while the database is non-empty, so the remaining levels
+	// must be checked too. The iterator's context reaches the HTTP request,
+	// so a stalled page is cancelled by this deadline rather than needing a
+	// watchdog around Next.
+	for _, level := range []int{0, ls.SnapshotLevel, 1, 2, 3, 4, 5, 6, 7, 8} {
 		lctx, lcancel := context.WithTimeout(ctx, hasLTXProbeTimeout)
 		itr, err := client.LTXFiles(lctx, level, 0, false)
 		if err != nil {
