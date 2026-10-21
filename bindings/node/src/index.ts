@@ -123,6 +123,11 @@ export interface RuntimeOptions {
    *  every VFS open re-reads the replica, trading latency for memory when the
    *  host process has better uses for it. */
   replicaCacheBytes?: number;
+  /** How long a compaction-level listing is cached, in milliseconds.
+   *  Default: 30000. Listings are metadata only (a few hundred bytes per
+   *  database), so this can stay on when replicaCacheBytes is 0. Set 0 to
+   *  list every level on every VFS open. */
+  levelListingCacheTtlMs?: number;
   /** Background VFS sync interval in milliseconds. Default: 1000. The
    *  mandatory flush before lease release remains authoritative. */
   writeSyncIntervalMs?: number;
@@ -263,6 +268,7 @@ export class WalrusdDatabase {
           read_instance_idle_ttl_ms: options.readInstanceIdleTtlMs,
           vfs_page_cache_bytes: options.vfsPageCacheBytes,
           replica_cache_bytes: options.replicaCacheBytes,
+          level_listing_cache_ttl_ms: options.levelListingCacheTtlMs,
           write_sync_interval_ms: options.writeSyncIntervalMs,
           max_temp_write_buffer: options.maxTempWriteBuffer,
           redis_address: options.redisAddress,

@@ -17,7 +17,8 @@ func TestBuildRuntimeConfigReadAndWriteKnobs(t *testing.T) {
 			"vfs_page_cache_bytes": 1048576,
 			"write_sync_interval_ms": 250,
 			"max_temp_write_buffer": 4194304,
-			"replica_cache_bytes": 2097152
+			"replica_cache_bytes": 2097152,
+			"level_listing_cache_ttl_ms": 45000
 		}
 	}`
 
@@ -45,6 +46,9 @@ func TestBuildRuntimeConfigReadAndWriteKnobs(t *testing.T) {
 	if got, want := cfg.Litestream.ReplicaCacheBytes, int64(2097152); got != want {
 		t.Errorf("ReplicaCacheBytes = %d, want %d", got, want)
 	}
+	if got, want := cfg.Litestream.LevelListingCacheTTL, 45*time.Second; got != want {
+		t.Errorf("LevelListingCacheTTL = %s, want %s", got, want)
+	}
 }
 
 func TestBuildRuntimeConfigReadAndWriteKnobsDefaultWhenOmitted(t *testing.T) {
@@ -69,6 +73,9 @@ func TestBuildRuntimeConfigReadAndWriteKnobsDefaultWhenOmitted(t *testing.T) {
 	if cfg.Litestream.ReplicaCacheBytes != defaults.Litestream.ReplicaCacheBytes {
 		t.Errorf("ReplicaCacheBytes = %d, want default %d", cfg.Litestream.ReplicaCacheBytes, defaults.Litestream.ReplicaCacheBytes)
 	}
+	if cfg.Litestream.LevelListingCacheTTL != defaults.Litestream.LevelListingCacheTTL {
+		t.Errorf("LevelListingCacheTTL = %s, want default %s", cfg.Litestream.LevelListingCacheTTL, defaults.Litestream.LevelListingCacheTTL)
+	}
 }
 
 func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
@@ -80,7 +87,8 @@ func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
 			"vfs_page_cache_bytes": 0,
 			"write_sync_interval_ms": 0,
 			"max_temp_write_buffer": 0,
-			"replica_cache_bytes": 0
+			"replica_cache_bytes": 0,
+			"level_listing_cache_ttl_ms": 0
 		}
 	}`
 
@@ -107,5 +115,8 @@ func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
 	}
 	if cfg.Litestream.ReplicaCacheBytes != 0 {
 		t.Errorf("ReplicaCacheBytes = %d, want 0", cfg.Litestream.ReplicaCacheBytes)
+	}
+	if cfg.Litestream.LevelListingCacheTTL != 0 {
+		t.Errorf("LevelListingCacheTTL = %s, want 0", cfg.Litestream.LevelListingCacheTTL)
 	}
 }

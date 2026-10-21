@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	litestream "github.com/benbjohnson/litestream"
 	"github.com/benbjohnson/litestream/file"
@@ -38,21 +39,24 @@ type Config struct {
 	HydrationEnabled    bool // must be false in normal operation (invariant 11)
 	WriteBufferRootPath string
 	MaxTempWriteBuffer  int64 // per-process temp write-buffer cap; <= 0 disables
-	// ReplicaCacheBytes bounds the per-runtime cache of immutable LTX files
-	// and compaction-level listings. <= 0 disables it: every VFS open re-reads
-	// the replica, so memory stays with the host process at the cost of the
-	// reads the cache would have served.
+	// ReplicaCacheBytes bounds the per-runtime cache of immutable LTX file
+	// bytes. <= 0 disables it: every VFS open re-reads the files, so memory
+	// stays with the host process at the cost of those reads.
 	ReplicaCacheBytes int64
+	// LevelListingCacheTTL bounds the cache of compaction-level listings
+	// (metadata only, a few hundred bytes per database). <= 0 disables it.
+	LevelListingCacheTTL time.Duration
 }
 
 // DefaultConfig returns the starting configuration from spec §16.
 func DefaultConfig() Config {
 	return Config{
-		WriteSyncInterval:  1000,
-		VFSPageCacheBytes:  10 * 1024 * 1024,
-		HydrationEnabled:   false,
-		MaxTempWriteBuffer: 268435456,
-		ReplicaCacheBytes:  defaultFileCacheBytes,
+		WriteSyncInterval:    1000,
+		VFSPageCacheBytes:    10 * 1024 * 1024,
+		HydrationEnabled:     false,
+		MaxTempWriteBuffer:   268435456,
+		ReplicaCacheBytes:    defaultFileCacheBytes,
+		LevelListingCacheTTL: defaultLevelListingTTL,
 	}
 }
 
@@ -60,10 +64,11 @@ func DefaultConfig() Config {
 type Bridge struct {
 	cfg Config
 
-	mu      sync.Mutex
-	names   map[string]string // database key -> registered vfs name
-	buffers *tempBudget
-	files   *fileCache // immutable LTX files shared by a database's VFSes
+	mu         sync.Mutex
+	names      map[string]string // database key -> registered vfs name
+	buffers    *tempBudget
+	files      *fileCache    // immutable LTX files shared by a database's VFSes
+	listingTTL time.Duration // compaction-level listing cache, 0 = off
 }
 
 // globalVFSSeq issues process-wide unique VFS names. One process can host
@@ -108,6 +113,9 @@ func NewBridge(cfg Config) *Bridge {
 	}
 	if cfg.ReplicaCacheBytes > 0 {
 		b.files = newFileCache(cfg.ReplicaCacheBytes)
+	}
+	if cfg.LevelListingCacheTTL > 0 {
+		b.listingTTL = cfg.LevelListingCacheTTL
 	}
 	return b
 }

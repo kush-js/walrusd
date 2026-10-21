@@ -28,11 +28,13 @@ const defaultFileCacheBytes = 32 << 20
 // maxCachedFileBytes bounds one entry. Larger files stream through uncached.
 const maxCachedFileBytes = 8 << 20
 
-// levelListingTTL bounds how long a non-tail level's listing is trusted.
-// WALrus never compacts (levels 1..9 are only written by a compactor), so
-// those listings are stable; the TTL is a backstop against an out-of-process
-// compactor, and every in-process write/delete invalidates its level.
-const levelListingTTL = 30 * time.Second
+// defaultLevelListingTTL bounds how long a non-tail level's listing is
+// trusted. WALrus never compacts (levels 1..9 are only written by a
+// compactor), so those listings are stable; the TTL is a backstop against an
+// out-of-process compactor, and every in-process write/delete invalidates its
+// level. Listing entries are metadata only — a few hundred bytes per database
+// — so this can stay on when the file cache is disabled for memory.
+const defaultLevelListingTTL = 30 * time.Second
 
 type fileKey struct {
 	dbKey   string
@@ -129,10 +131,11 @@ func (c *fileCache) dropDB(dbKey string) {
 // front of a replica client.
 type cachingClient struct {
 	litestream.ReplicaClient
-	dbKey    string
-	files    *fileCache
-	listMu   sync.Mutex
-	listings map[int]listingEntry
+	dbKey      string
+	files      *fileCache    // nil = LTX file bytes are not cached
+	listingTTL time.Duration // <= 0 = level listings are not cached
+	listMu     sync.Mutex
+	listings   map[int]listingEntry
 }
 
 type listingEntry struct {
@@ -140,11 +143,12 @@ type listingEntry struct {
 	at    time.Time
 }
 
-func newCachingClient(inner litestream.ReplicaClient, dbKey string, files *fileCache) *cachingClient {
+func newCachingClient(inner litestream.ReplicaClient, dbKey string, files *fileCache, listingTTL time.Duration) *cachingClient {
 	return &cachingClient{
 		ReplicaClient: inner,
 		dbKey:         dbKey,
 		files:         files,
+		listingTTL:    listingTTL,
 		listings:      make(map[int]listingEntry),
 	}
 }
@@ -154,14 +158,14 @@ func newCachingClient(inner litestream.ReplicaClient, dbKey string, files *fileC
 // changes in a non-compacting replica, so the other nine become one LIST per
 // TTL instead of nine per open.
 func (c *cachingClient) LTXFiles(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
-	if level == 0 {
+	if level == 0 || c.listingTTL <= 0 {
 		return c.ReplicaClient.LTXFiles(ctx, level, seek, useMetadata)
 	}
 
 	c.listMu.Lock()
 	entry, ok := c.listings[level]
 	c.listMu.Unlock()
-	if ok && time.Since(entry.at) < levelListingTTL {
+	if ok && time.Since(entry.at) < c.listingTTL {
 		return ltx.NewFileInfoSliceIterator(filterFrom(entry.infos, seek)), nil
 	}
 
@@ -205,6 +209,9 @@ func (c *cachingClient) dropLevel(level int) {
 }
 
 func (c *cachingClient) OpenLTXFile(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, offset, size int64) (io.ReadCloser, error) {
+	if c.files == nil {
+		return c.ReplicaClient.OpenLTXFile(ctx, level, minTXID, maxTXID, offset, size)
+	}
 	key := fileKey{dbKey: c.dbKey, level: level, minTXID: minTXID, maxTXID: maxTXID}
 	if data, ok := c.files.get(key); ok {
 		return sliceReader(data, offset, size), nil
@@ -240,6 +247,10 @@ func sliceReader(data []byte, offset, size int64) io.ReadCloser {
 }
 
 func (c *cachingClient) WriteLTXFile(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, r io.Reader) (*ltx.FileInfo, error) {
+	c.dropLevel(level)
+	if c.files == nil {
+		return c.ReplicaClient.WriteLTXFile(ctx, level, minTXID, maxTXID, r)
+	}
 	// The flush passes the whole file, so cache the bytes we are about to
 	// write: the next open reads the file we just produced.
 	data, err := io.ReadAll(r)
@@ -248,7 +259,6 @@ func (c *cachingClient) WriteLTXFile(ctx context.Context, level int, minTXID, ma
 	}
 	key := fileKey{dbKey: c.dbKey, level: level, minTXID: minTXID, maxTXID: maxTXID}
 	c.files.drop(key)
-	c.dropLevel(level)
 	info, err := c.ReplicaClient.WriteLTXFile(ctx, level, minTXID, maxTXID, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -261,14 +271,18 @@ func (c *cachingClient) WriteLTXFile(ctx context.Context, level int, minTXID, ma
 
 func (c *cachingClient) DeleteLTXFiles(ctx context.Context, files []*ltx.FileInfo) error {
 	for _, file := range files {
-		c.files.drop(fileKey{dbKey: c.dbKey, level: file.Level, minTXID: file.MinTXID, maxTXID: file.MaxTXID})
+		if c.files != nil {
+			c.files.drop(fileKey{dbKey: c.dbKey, level: file.Level, minTXID: file.MinTXID, maxTXID: file.MaxTXID})
+		}
 		c.dropLevel(file.Level)
 	}
 	return c.ReplicaClient.DeleteLTXFiles(ctx, files)
 }
 
 func (c *cachingClient) DeleteAll(ctx context.Context) error {
-	c.files.dropDB(c.dbKey)
+	if c.files != nil {
+		c.files.dropDB(c.dbKey)
+	}
 	c.listMu.Lock()
 	c.listings = make(map[int]listingEntry)
 	c.listMu.Unlock()

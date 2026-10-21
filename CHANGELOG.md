@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.14
+
+- Split the replica cache in two: `replica_cache_bytes` now covers LTX file bytes only, and `level_listing_cache_ttl_ms` (default 30s) covers the compaction-level listings. The listings are metadata, so a process can keep `replica_cache_bytes` at 0 to hold no file data while still skipping nine of the ten level LISTs per VFS open.
+
 ## 0.5.13
 
 - Cache immutable LTX files and stable level listings per database. Litestream re-reads the header, page index, and trailer of every file in the replica chain on each VFS open (seven ranged GETs per file) plus one LIST per compaction level; writes are not session-cached and WALrus does not compact, so every write paid the whole chain and got slower as the chain grew. Against SeaweedFS with 30ms injected latency, a nine-operation sequence dropped from 158 S3 requests to 29 and from 0.75-1.0s per write (rising with chain length) to a flat ~150ms; a cold read went from ~0.98s to ~0.09s. Levels 1-9 listings are cached for 30s (only a compactor writes them; an in-process write or delete invalidates its level); level 0 is always listed fresh. Files are cached by TXID and dropped on write/delete. The cache is optional: `replica_cache_bytes` (default 32 MiB) bounds it per runtime, and 0 disables it when the host process's memory belongs to something else.

@@ -23,24 +23,25 @@ type InitRequest struct {
 }
 
 type runtimeConfig struct {
-	RequestTimeoutMs      int64    `json:"request_timeout_ms,omitempty"`
-	LeaseDurationMs       int64    `json:"lease_duration_ms,omitempty"`
-	ClockSkewMs           int64    `json:"clock_skew_ms,omitempty"`
-	AcquireRetryBudgetMs  int64    `json:"acquire_retry_budget_ms,omitempty"`
-	RetryBackoffMinMs     int64    `json:"retry_backoff_min_ms,omitempty"`
-	RetryBackoffMaxMs     int64    `json:"retry_backoff_max_ms,omitempty"`
-	RetryFixedDelayMs     *int64   `json:"retry_fixed_delay_ms,omitempty"`
-	RetryFixedCount       *int     `json:"retry_fixed_count,omitempty"`
-	RetryMultiplier       *float64 `json:"retry_multiplier,omitempty"`
-	RetryMaxDelayMs       *int64   `json:"retry_max_delay_ms,omitempty"`
-	RetryMaxTotalMs       *int64   `json:"retry_max_total_ms,omitempty"`
-	WriteBufferRootPath   string   `json:"write_buffer_root_path,omitempty"`
-	MaxReadInstances      *int     `json:"max_read_instances,omitempty"`
-	ReadInstanceIdleTTLMs *int64   `json:"read_instance_idle_ttl_ms,omitempty"`
-	VFSPageCacheBytes     *int     `json:"vfs_page_cache_bytes,omitempty"`
-	WriteSyncIntervalMs   *int64   `json:"write_sync_interval_ms,omitempty"`
-	MaxTempWriteBuffer    *int64   `json:"max_temp_write_buffer,omitempty"`
-	ReplicaCacheBytes     *int64   `json:"replica_cache_bytes,omitempty"`
+	RequestTimeoutMs       int64    `json:"request_timeout_ms,omitempty"`
+	LeaseDurationMs        int64    `json:"lease_duration_ms,omitempty"`
+	ClockSkewMs            int64    `json:"clock_skew_ms,omitempty"`
+	AcquireRetryBudgetMs   int64    `json:"acquire_retry_budget_ms,omitempty"`
+	RetryBackoffMinMs      int64    `json:"retry_backoff_min_ms,omitempty"`
+	RetryBackoffMaxMs      int64    `json:"retry_backoff_max_ms,omitempty"`
+	RetryFixedDelayMs      *int64   `json:"retry_fixed_delay_ms,omitempty"`
+	RetryFixedCount        *int     `json:"retry_fixed_count,omitempty"`
+	RetryMultiplier        *float64 `json:"retry_multiplier,omitempty"`
+	RetryMaxDelayMs        *int64   `json:"retry_max_delay_ms,omitempty"`
+	RetryMaxTotalMs        *int64   `json:"retry_max_total_ms,omitempty"`
+	WriteBufferRootPath    string   `json:"write_buffer_root_path,omitempty"`
+	MaxReadInstances       *int     `json:"max_read_instances,omitempty"`
+	ReadInstanceIdleTTLMs  *int64   `json:"read_instance_idle_ttl_ms,omitempty"`
+	VFSPageCacheBytes      *int     `json:"vfs_page_cache_bytes,omitempty"`
+	WriteSyncIntervalMs    *int64   `json:"write_sync_interval_ms,omitempty"`
+	MaxTempWriteBuffer     *int64   `json:"max_temp_write_buffer,omitempty"`
+	ReplicaCacheBytes      *int64   `json:"replica_cache_bytes,omitempty"`
+	LevelListingCacheTTLMs *int64   `json:"level_listing_cache_ttl_ms,omitempty"`
 	// Redis backing for leases (shared deployments). Empty address falls
 	// back to an in-process memory store: fine for dev and single-process
 	// use, but it serializes only within this handle — cross-process
@@ -143,6 +144,9 @@ func buildRuntimeConfig(r runtimeConfig) runtime.Config {
 	}
 	if v := r.ReplicaCacheBytes; v != nil {
 		cfg.Litestream.ReplicaCacheBytes = *v
+	}
+	if v := r.LevelListingCacheTTLMs; v != nil {
+		cfg.Litestream.LevelListingCacheTTL = time.Duration(*v) * time.Millisecond
 	}
 	return cfg
 }

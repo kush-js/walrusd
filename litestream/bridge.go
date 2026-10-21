@@ -121,8 +121,8 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 		return nil, err
 	}
 	shared := client
-	if b.files != nil {
-		shared = newCachingClient(client, dbKey, b.files)
+	if b.files != nil || b.listingTTL > 0 {
+		shared = newCachingClient(client, dbKey, b.files, b.listingTTL)
 	}
 	w := b.newWrapperVFS(shared, false)
 	// Litestream requires a positive poll interval (its monitor builds a

@@ -653,6 +653,7 @@ defaulted from spec §16):
     "read_instance_idle_ttl_ms": 60000,
     "vfs_page_cache_bytes": 10485760,
     "replica_cache_bytes": 33554432,
+    "level_listing_cache_ttl_ms": 30000,
     "write_sync_interval_ms": 1000,
     "max_temp_write_buffer": 268435456,
     "redis_address": "127.0.0.1:6379"
@@ -675,7 +676,10 @@ in bytes. `replica_cache_bytes` bounds the per-runtime cache of immutable LTX
 replica files and level listings (default 32 MiB, evicted LRU); a value at or
 below 0 disables it, so every VFS open re-reads the replica — set it to 0 when
 the process's memory is better spent on the API it serves, at the cost of the
-replica reads the cache would have served. `write_sync_interval_ms` is the background VFS sync interval
+replica reads the cache would have served. `level_listing_cache_ttl_ms`
+controls the separate cache of compaction-level listings (metadata only, a few
+hundred bytes per database): keep it on with `replica_cache_bytes: 0` to skip
+nine of the ten level LISTs per open without holding file bytes. `write_sync_interval_ms` is the background VFS sync interval
 forwarded to Litestream configuration; the synchronous flush before lease
 release remains the durability barrier. `max_temp_write_buffer` caps
 per-process temporary write-buffer bytes, and a value at or below 0 disables

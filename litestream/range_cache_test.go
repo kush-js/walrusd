@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	ls "github.com/benbjohnson/litestream"
 	"github.com/superfly/ltx"
@@ -97,8 +98,13 @@ func (f *fakeReplica) DeleteAll(context.Context) error {
 
 func newTestCacheClient(t *testing.T) (*cachingClient, *fakeReplica) {
 	t.Helper()
+	return newTestCacheClientWith(t, newFileCache(1<<20), defaultLevelListingTTL)
+}
+
+func newTestCacheClientWith(t *testing.T, files *fileCache, listingTTL time.Duration) (*cachingClient, *fakeReplica) {
+	t.Helper()
 	inner := newFakeReplica()
-	return newCachingClient(inner, "orgs/o1/users/u1", newFileCache(1<<20)), inner
+	return newCachingClient(inner, "orgs/o1/users/u1", files, listingTTL), inner
 }
 
 func writeTestFile(t *testing.T, client ls.ReplicaClient, level int, min, max ltx.TXID, body []byte) {
@@ -192,5 +198,48 @@ func TestCachingClient_ListsTailEveryTimeAndStableLevelsOnce(t *testing.T) {
 	// Three opens: the live tail is listed each time, the snapshot level once.
 	if got := inner.lists.Load(); got != 4 {
 		t.Fatalf("LTXFiles calls = %d, want 4 (3 tail + 1 snapshot)", got)
+	}
+}
+
+func TestCachingClient_FileCacheOffKeepsListingCache(t *testing.T) {
+	client, inner := newTestCacheClientWith(t, nil, defaultLevelListingTTL)
+	ctx := context.Background()
+	if _, err := inner.WriteLTXFile(ctx, 0, 1, 1, bytes.NewReader([]byte("remote"))); err != nil {
+		t.Fatalf("seed replica: %v", err)
+	}
+
+	for range 3 {
+		rc, err := client.OpenLTXFile(ctx, 0, 1, 1, 0, 0)
+		if err != nil {
+			t.Fatalf("open ltx file: %v", err)
+		}
+		io.Copy(io.Discard, rc)
+		rc.Close()
+	}
+	if got := inner.opens.Load(); got != 3 {
+		t.Fatalf("OpenLTXFile calls = %d, want 3 with the file cache disabled", got)
+	}
+
+	for range 3 {
+		if _, err := client.LTXFiles(ctx, 9, 0, false); err != nil {
+			t.Fatalf("list level 9: %v", err)
+		}
+	}
+	if got := inner.lists.Load(); got != 1 {
+		t.Fatalf("LTXFiles calls = %d, want 1 with the listing cache enabled", got)
+	}
+}
+
+func TestCachingClient_ListingCacheOffListsEveryTime(t *testing.T) {
+	client, inner := newTestCacheClientWith(t, nil, 0)
+	ctx := context.Background()
+
+	for range 3 {
+		if _, err := client.LTXFiles(ctx, 9, 0, false); err != nil {
+			t.Fatalf("list level 9: %v", err)
+		}
+	}
+	if got := inner.lists.Load(); got != 3 {
+		t.Fatalf("LTXFiles calls = %d, want 3 with the listing cache disabled", got)
 	}
 }
