@@ -128,6 +128,18 @@ export interface RuntimeOptions {
    *  database), so this can stay on when replicaCacheBytes is 0. Set 0 to
    *  list every level on every VFS open. */
   levelListingCacheTtlMs?: number;
+  /** Compact the replica chain after every N writes. Default: true. */
+  compactionEnabled?: boolean;
+  /** Writes between compaction checks. Default: 8. */
+  compactionInterval?: number;
+  /** Files per level that trigger a merge. Default: 8. */
+  compactionThreshold?: number;
+  /** Age in milliseconds before merged source files are deleted, so an
+   *  in-flight read can finish against the files it planned on.
+   *  Default: 600000 (10 minutes). */
+  compactionRetentionMs?: number;
+  /** Bound on one compaction pass, in milliseconds. Default: 30000. */
+  compactionTimeoutMs?: number;
   /** Background VFS sync interval in milliseconds. Default: 1000. The
    *  mandatory flush before lease release remains authoritative. */
   writeSyncIntervalMs?: number;
@@ -269,6 +281,11 @@ export class WalrusdDatabase {
           vfs_page_cache_bytes: options.vfsPageCacheBytes,
           replica_cache_bytes: options.replicaCacheBytes,
           level_listing_cache_ttl_ms: options.levelListingCacheTtlMs,
+          compaction_enabled: options.compactionEnabled,
+          compaction_interval: options.compactionInterval,
+          compaction_threshold: options.compactionThreshold,
+          compaction_retention_ms: options.compactionRetentionMs,
+          compaction_timeout_ms: options.compactionTimeoutMs,
           write_sync_interval_ms: options.writeSyncIntervalMs,
           max_temp_write_buffer: options.maxTempWriteBuffer,
           redis_address: options.redisAddress,

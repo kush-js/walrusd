@@ -202,6 +202,14 @@ func filterFrom(infos []*ltx.FileInfo, seek ltx.TXID) []*ltx.FileInfo {
 	return filtered
 }
 
+// DropListings forgets every cached level listing. Compaction rewrites levels
+// behind the client's back, so it clears them before deciding what to merge.
+func (c *cachingClient) DropListings() {
+	c.listMu.Lock()
+	c.listings = make(map[int]listingEntry)
+	c.listMu.Unlock()
+}
+
 func (c *cachingClient) dropLevel(level int) {
 	c.listMu.Lock()
 	delete(c.listings, level)

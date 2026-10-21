@@ -654,6 +654,11 @@ defaulted from spec §16):
     "vfs_page_cache_bytes": 10485760,
     "replica_cache_bytes": 33554432,
     "level_listing_cache_ttl_ms": 30000,
+    "compaction_enabled": true,
+    "compaction_interval": 8,
+    "compaction_threshold": 8,
+    "compaction_retention_ms": 600000,
+    "compaction_timeout_ms": 30000,
     "write_sync_interval_ms": 1000,
     "max_temp_write_buffer": 268435456,
     "redis_address": "127.0.0.1:6379"
@@ -679,7 +684,15 @@ the process's memory is better spent on the API it serves, at the cost of the
 replica reads the cache would have served. `level_listing_cache_ttl_ms`
 controls the separate cache of compaction-level listings (metadata only, a few
 hundred bytes per database): keep it on with `replica_cache_bytes: 0` to skip
-nine of the ten level LISTs per open without holding file bytes. `write_sync_interval_ms` is the background VFS sync interval
+nine of the ten level LISTs per open without holding file bytes.
+
+Compaction keeps the chain bounded: every `compaction_interval` writes, under
+the write lease, each level holding more than `compaction_threshold` files is
+merged into the next level (L0 through L8; level 9 is Litestream's snapshot
+level and is never written by a merge). Merged sources are deleted only after
+`compaction_retention_ms`, so a read that planned on them can finish. A
+compaction pass is bounded by `compaction_timeout_ms`; a failure is recorded
+in metrics and never fails the write that triggered it. `write_sync_interval_ms` is the background VFS sync interval
 forwarded to Litestream configuration; the synchronous flush before lease
 release remains the durability barrier. `max_temp_write_buffer` caps
 per-process temporary write-buffer bytes, and a value at or below 0 disables

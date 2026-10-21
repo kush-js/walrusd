@@ -42,6 +42,11 @@ type runtimeConfig struct {
 	MaxTempWriteBuffer     *int64   `json:"max_temp_write_buffer,omitempty"`
 	ReplicaCacheBytes      *int64   `json:"replica_cache_bytes,omitempty"`
 	LevelListingCacheTTLMs *int64   `json:"level_listing_cache_ttl_ms,omitempty"`
+	CompactionEnabled      *bool    `json:"compaction_enabled,omitempty"`
+	CompactionInterval     *int     `json:"compaction_interval,omitempty"`
+	CompactionThreshold    *int     `json:"compaction_threshold,omitempty"`
+	CompactionRetentionMs  *int64   `json:"compaction_retention_ms,omitempty"`
+	CompactionTimeoutMs    *int64   `json:"compaction_timeout_ms,omitempty"`
 	// Redis backing for leases (shared deployments). Empty address falls
 	// back to an in-process memory store: fine for dev and single-process
 	// use, but it serializes only within this handle — cross-process
@@ -147,6 +152,21 @@ func buildRuntimeConfig(r runtimeConfig) runtime.Config {
 	}
 	if v := r.LevelListingCacheTTLMs; v != nil {
 		cfg.Litestream.LevelListingCacheTTL = time.Duration(*v) * time.Millisecond
+	}
+	if v := r.CompactionEnabled; v != nil {
+		cfg.Compaction.Enabled = *v
+	}
+	if v := r.CompactionInterval; v != nil {
+		cfg.Compaction.Interval = *v
+	}
+	if v := r.CompactionThreshold; v != nil {
+		cfg.Compaction.Threshold = *v
+	}
+	if v := r.CompactionRetentionMs; v != nil {
+		cfg.Compaction.Retention = time.Duration(*v) * time.Millisecond
+	}
+	if v := r.CompactionTimeoutMs; v != nil {
+		cfg.Compaction.Timeout = time.Duration(*v) * time.Millisecond
 	}
 	return cfg
 }

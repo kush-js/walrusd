@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"walrusd/cache"
@@ -27,21 +28,42 @@ type Config struct {
 	ReadInstanceIdleTTL time.Duration
 	MaxReadInstances    int
 	MaxTempWriteBuffer  int64
+	Compaction          CompactionConfig
 	// RequireFlushBeforeRelease must stay true (spec §16 durability); the
 	// runtime rejects configuration that disables it.
 	RequireFlushBeforeRelease bool
 }
 
+// CompactionConfig keeps the replica chain bounded. Compaction merges a
+// level's files once it holds more than Threshold files, cascading upward,
+// and deletes the merged sources after Retention. It runs under the write
+// lease, after a write has flushed, so the chain the next writer appends to
+// is already small.
+type CompactionConfig struct {
+	Enabled   bool
+	Interval  int           // writes between compaction checks
+	Threshold int           // files per level that trigger a merge
+	Retention time.Duration // age before merged sources are deleted
+	Timeout   time.Duration // bound on one compaction pass
+}
+
 // DefaultConfig returns the starting configuration from spec §16.
 func DefaultConfig() Config {
 	return Config{
-		Lease:                     lease.DefaultConfig(),
-		Litestream:                litestream.DefaultConfig(),
-		RequestTimeout:            20 * time.Second,
-		RetryPolicy:               DefaultRetryPolicy(),
-		ReadInstanceIdleTTL:       60 * time.Second,
-		MaxReadInstances:          200,
-		MaxTempWriteBuffer:        268435456,
+		Lease:               lease.DefaultConfig(),
+		Litestream:          litestream.DefaultConfig(),
+		RequestTimeout:      20 * time.Second,
+		RetryPolicy:         DefaultRetryPolicy(),
+		ReadInstanceIdleTTL: 60 * time.Second,
+		MaxReadInstances:    200,
+		MaxTempWriteBuffer:  268435456,
+		Compaction: CompactionConfig{
+			Enabled:   true,
+			Interval:  8,
+			Threshold: 8,
+			Retention: 10 * time.Minute,
+			Timeout:   30 * time.Second,
+		},
 		RequireFlushBeforeRelease: true,
 	}
 }
@@ -66,6 +88,9 @@ type databaseEntry struct {
 	vfs     *litestream.Database
 	refs    int
 	evicted bool
+	// writes counts successful writes since the process opened this database;
+	// every Interval-th write runs a compaction pass under the held lease.
+	writes atomic.Int64
 }
 
 var errReadSessionClosed = errors.New("runtime: cached read session closed")
@@ -649,6 +674,28 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 	// A cached read session may still hold the pre-write index. Drop it so
 	// the next read opens at the flushed remote state.
 	r.reads.Evict(vfs.Key)
+	// 4b. Keep the replica chain bounded. This runs under the lease, after
+	// the flush: the next writer appends to the chain compaction just left.
+	// It is best-effort — the write is already durable, so a compaction
+	// failure must not turn it into an error.
+	if r.cfg.Compaction.Enabled && r.cfg.Compaction.Interval > 0 &&
+		entry.writes.Add(1)%int64(r.cfg.Compaction.Interval) == 0 {
+		timeout := r.cfg.Compaction.Timeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		cctx, cancel := context.WithTimeout(context.Background(), timeout)
+		levels, cerr := vfs.Compact(cctx, r.cfg.Compaction.Threshold, r.cfg.Compaction.Retention)
+		cancel()
+		r.metrics.Record(dbKey, func(m *observability.Metrics) {
+			if cerr != nil {
+				m.CompactionFailures++
+				return
+			}
+			m.Compactions++
+			m.CompactedLevels += uint64(levels)
+		})
+	}
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
 		if walrusderr.ClassOf(err) == walrusderr.ClassLeaseConflict {

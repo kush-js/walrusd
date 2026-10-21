@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.15
+
+- Compact the replica chain under the write lease. Every `compaction_interval` writes, each level with more than `compaction_threshold` files is merged into the next (L0 through L8; L9 is Litestream's snapshot level and is never written by a merge), and merged sources are deleted after `compaction_retention_ms` so in-flight readers can finish. Without this the chain grew by one file per write forever, and every write re-read the whole chain.
+
 ## 0.5.14
 
 - Split the replica cache in two: `replica_cache_bytes` now covers LTX file bytes only, and `level_listing_cache_ttl_ms` (default 30s) covers the compaction-level listings. The listings are metadata, so a process can keep `replica_cache_bytes` at 0 to hold no file data while still skipping nine of the ten level LISTs per VFS open.

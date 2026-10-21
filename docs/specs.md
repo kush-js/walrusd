@@ -265,6 +265,9 @@ runtime:
   vfs_page_cache_bytes: 10485760
   replica_cache_bytes: 33554432
   level_listing_cache_ttl_ms: 30000
+  compaction_enabled: true
+  compaction_interval: 8
+  compaction_threshold: 8
   max_total_cache_bytes: 2147483648
   max_temp_write_buffer_bytes: 268435456
   hydration_enabled: false

@@ -30,6 +30,11 @@ type Metrics struct {
 	FlushConflictErrors      uint64
 	FlushDurationMicros      uint64 // cumulative; divide by FlushSuccesses
 
+	// Compaction signals.
+	Compactions        uint64
+	CompactedLevels    uint64
+	CompactionFailures uint64
+
 	// Idempotency signals.
 	IdempotencyDedupeHits        uint64
 	IdempotencyAmbiguousOutcomes uint64

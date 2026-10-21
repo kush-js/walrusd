@@ -18,7 +18,12 @@ func TestBuildRuntimeConfigReadAndWriteKnobs(t *testing.T) {
 			"write_sync_interval_ms": 250,
 			"max_temp_write_buffer": 4194304,
 			"replica_cache_bytes": 2097152,
-			"level_listing_cache_ttl_ms": 45000
+			"level_listing_cache_ttl_ms": 45000,
+			"compaction_enabled": false,
+			"compaction_interval": 3,
+			"compaction_threshold": 5,
+			"compaction_retention_ms": 60000,
+			"compaction_timeout_ms": 20000
 		}
 	}`
 
@@ -48,6 +53,21 @@ func TestBuildRuntimeConfigReadAndWriteKnobs(t *testing.T) {
 	}
 	if got, want := cfg.Litestream.LevelListingCacheTTL, 45*time.Second; got != want {
 		t.Errorf("LevelListingCacheTTL = %s, want %s", got, want)
+	}
+	if cfg.Compaction.Enabled {
+		t.Error("Compaction.Enabled = true, want false")
+	}
+	if got, want := cfg.Compaction.Interval, 3; got != want {
+		t.Errorf("Compaction.Interval = %d, want %d", got, want)
+	}
+	if got, want := cfg.Compaction.Threshold, 5; got != want {
+		t.Errorf("Compaction.Threshold = %d, want %d", got, want)
+	}
+	if got, want := cfg.Compaction.Retention, time.Minute; got != want {
+		t.Errorf("Compaction.Retention = %s, want %s", got, want)
+	}
+	if got, want := cfg.Compaction.Timeout, 20*time.Second; got != want {
+		t.Errorf("Compaction.Timeout = %s, want %s", got, want)
 	}
 }
 
@@ -88,7 +108,9 @@ func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
 			"write_sync_interval_ms": 0,
 			"max_temp_write_buffer": 0,
 			"replica_cache_bytes": 0,
-			"level_listing_cache_ttl_ms": 0
+			"level_listing_cache_ttl_ms": 0,
+			"compaction_enabled": false,
+			"compaction_interval": 0
 		}
 	}`
 
@@ -118,5 +140,11 @@ func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
 	}
 	if cfg.Litestream.LevelListingCacheTTL != 0 {
 		t.Errorf("LevelListingCacheTTL = %s, want 0", cfg.Litestream.LevelListingCacheTTL)
+	}
+	if cfg.Compaction.Enabled {
+		t.Error("Compaction.Enabled = true, want false")
+	}
+	if cfg.Compaction.Interval != 0 {
+		t.Errorf("Compaction.Interval = %d, want 0", cfg.Compaction.Interval)
 	}
 }
