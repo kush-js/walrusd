@@ -3,11 +3,13 @@ package runtime_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"walrusd/lease"
 	"walrusd/litestream"
@@ -96,6 +98,62 @@ func TestConcurrentFirstWritesDifferentDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
+	}
+}
+
+// TestConcurrentWritesSameDatabaseQueue proves that same-process writers wait
+// for the holder's release instead of paying the jittered cross-process
+// backoff. The backoff is set to five seconds so the old polling path cannot
+// accidentally pass.
+func TestConcurrentWritesSameDatabaseQueue(t *testing.T) {
+	cfg := runtime.DefaultConfig()
+	cfg.Litestream.WriteBufferRootPath = t.TempDir()
+	cfg.Compaction.Enabled = false
+	cfg.RetryPolicy = runtime.DefaultRetryPolicy()
+	cfg.Lease.AcquireRetryBudget = 10 * time.Second
+	cfg.Lease.RetryBackoffMin = 5 * time.Second
+	cfg.Lease.RetryBackoffMax = 5 * time.Second
+	rt, err := runtime.New(lease.NewMemoryStore(), "same-db-queue", cfg)
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer rt.Close()
+
+	d := descriptor(t, "users/same-db-queue")
+	if _, err := rt.WithWrite(context.Background(), d, "schema", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(context.Background(), `CREATE TABLE t (id INTEGER PRIMARY KEY)`)
+		return err
+	}); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	const writers = 10
+	start := time.Now()
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := rt.WithWrite(context.Background(), d, fmt.Sprintf("queue-%d", i), func(conn *sql.Conn) error {
+				_, err := conn.ExecContext(context.Background(), `INSERT INTO t (id) VALUES (?)`, i)
+				return err
+			})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("same-database writers took %v; release notification did not queue them", elapsed)
+	}
+	if retries := rt.MetricsTotal().WriteRetries; retries != 0 {
+		t.Fatalf("write retries = %d, want local queueing with no outer retries", retries)
 	}
 }
 

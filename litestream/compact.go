@@ -44,18 +44,23 @@ func (d *Database) CompactWithClient(ctx context.Context, client ls.ReplicaClien
 
 	compactor := ls.NewCompactor(client, noOpLogger())
 	merged := make([]*ltx.FileInfo, 0, compactionTopLevel)
+	// Check every source level independently. A busy lower level can add
+	// files to the next level, and a higher level that crossed the threshold
+	// must still be merged even when the level below it is already small.
 	for level := 1; level <= compactionTopLevel; level++ {
 		count, err := countLTXFiles(ctx, client, level-1)
 		if err != nil {
 			return len(merged), merged, fmt.Errorf("litestream: count level %d: %w", level-1, err)
 		}
 		if count <= threshold {
-			break
+			continue
 		}
 
 		info, err := compactor.Compact(ctx, level)
 		if errors.Is(err, ls.ErrNoCompaction) {
-			break
+			// The level is over threshold but has no new files after the
+			// destination's highest TXID. Leave it and check the next level.
+			continue
 		}
 		if err != nil {
 			return len(merged), merged, fmt.Errorf("litestream: compact level %d: %w", level, err)
@@ -69,6 +74,29 @@ func (d *Database) CompactWithClient(ctx context.Context, client ls.ReplicaClien
 		}
 	}
 	return len(merged), merged, nil
+}
+
+// ManifestNeedsCompaction reports whether any level that can be merged upward
+// holds more than threshold files. Level 8 is the top level; it is not
+// included because compactions write to level 8 and never merge it into the
+// snapshot level. Callers should use this after every successful write so the
+// decision is based on durable replica state, not on whether the database is
+// still resident in the process LRU.
+func ManifestNeedsCompaction(files []*ltx.FileInfo, threshold int) bool {
+	if threshold <= 0 {
+		threshold = 1
+	}
+	counts := make(map[int]int, compactionTopLevel)
+	for _, f := range files {
+		if f == nil || f.Level < 0 || f.Level >= compactionTopLevel {
+			continue
+		}
+		counts[f.Level]++
+		if counts[f.Level] > threshold {
+			return true
+		}
+	}
+	return false
 }
 
 // CompactManifest runs compaction against a manifest snapshot and returns the

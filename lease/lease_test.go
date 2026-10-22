@@ -127,6 +127,52 @@ func TestAcquireTakeoverAfterExpiry(t *testing.T) {
 	}
 }
 
+// TestReleaseWakesLocalWaiter proves that a same-process waiter is released
+// by the holder's release, not by the jittered backoff timer. The timer is set
+// to five seconds so the old polling path cannot accidentally pass.
+func TestReleaseWakesLocalWaiter(t *testing.T) {
+	m, _ := newManager(t, func(c *lease.Config) {
+		c.AcquireRetryBudget = 10 * time.Second
+		c.RetryBackoffMin = 5 * time.Second
+		c.RetryBackoffMax = 5 * time.Second
+	})
+	d := db(t)
+	held, err := m.Acquire(context.Background(), d)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	acquired := make(chan *lease.Held, 1)
+	acquireErr := make(chan error, 1)
+	go func() {
+		next, err := m.Acquire(context.Background(), d)
+		if err != nil {
+			acquireErr <- err
+			return
+		}
+		acquired <- next
+	}()
+	time.Sleep(100 * time.Millisecond) // let the waiter enter the held path
+
+	start := time.Now()
+	if err := m.Release(context.Background(), held); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	select {
+	case next := <-acquired:
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("waiter woke after %v, want release notification", elapsed)
+		}
+		if err := m.Release(context.Background(), next); err != nil {
+			t.Fatalf("release next: %v", err)
+		}
+	case err := <-acquireErr:
+		t.Fatalf("waiter acquire: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not wake after release")
+	}
+}
+
 func TestReleaseKeepsObjectAndEpoch(t *testing.T) {
 	m, store := newManager(t, nil)
 	d := db(t)

@@ -121,10 +121,11 @@ The default outer schedule is ten `1s` delays followed by `2s`, `4s`, `8s`,
 | Option | Default | Unit | Purpose |
 |---|---:|---|---|
 | `compactionEnabled` | `true` | bool | Run replica-chain compaction in a background worker |
-| `compactionInterval` | `8` | writes | Writes between compaction checks |
+| `compactionInterval` | `8` | writes | Retained for compatibility; compaction now triggers from the durable manifest after every successful write |
 | `compactionThreshold` | `8` | files | Files in a level that trigger a merge into the next level |
 | `compactionRetentionMs` | `600000` | milliseconds | Age before merged source files are deleted, so an in-flight read can finish |
 | `compactionTimeoutMs` | `30000` | milliseconds | Bound on one compaction pass |
+| `compactionWorkers` | `4` | workers | Concurrent compaction passes per process; same-database passes are serialized by the compaction lease |
 
 ### Write Buffer
 

@@ -48,6 +48,7 @@ type runtimeConfig struct {
 	CompactionThreshold    *int     `json:"compaction_threshold,omitempty"`
 	CompactionRetentionMs  *int64   `json:"compaction_retention_ms,omitempty"`
 	CompactionTimeoutMs    *int64   `json:"compaction_timeout_ms,omitempty"`
+	CompactionWorkers      *int     `json:"compaction_workers,omitempty"`
 	// Redis backing for leases (shared deployments). Empty address falls
 	// back to an in-process memory store: fine for dev and single-process
 	// use, but it serializes only within this handle — cross-process
@@ -193,6 +194,9 @@ func buildRuntimeConfig(r runtimeConfig) runtime.Config {
 	}
 	if v := r.CompactionTimeoutMs; v != nil {
 		cfg.Compaction.Timeout = time.Duration(*v) * time.Millisecond
+	}
+	if v := r.CompactionWorkers; v != nil {
+		cfg.Compaction.Workers = *v
 	}
 	if v := r.MaxReadResultBytes; v != nil {
 		cfg.MaxReadResultBytes = *v

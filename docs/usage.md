@@ -693,6 +693,7 @@ defaulted from spec §16):
     "compaction_threshold": 8,
     "compaction_retention_ms": 600000,
     "compaction_timeout_ms": 30000,
+    "compaction_workers": 4,
     "max_temp_write_buffer": 268435456,
     "max_read_result_bytes": 67108864,
     "redis_address": "127.0.0.1:6379"
@@ -720,13 +721,18 @@ controls the separate cache of compaction-level listings (metadata only, a few
 hundred bytes per database): keep it on with `replica_cache_bytes: 0` to skip
 nine of the ten level LISTs per open without holding file bytes.
 
-Compaction keeps the chain bounded: a background worker merges a level's files
+Compaction keeps the chain bounded: a worker pool merges any compactable level
 once it holds more than `compaction_threshold` files, cascading upward (L0
-through L8; L9 is Litestream's snapshot level and is never written by a merge).
-Every `compaction_interval` writes triggers a check, and the pass runs under a
-separate compaction lease outside the write lease, so a slow merge never
-extends a write. The manifest is updated under the write lease before merged
-sources are deleted, and those sources are removed only after
+through L7 merge into L8; L9 is Litestream's snapshot level and is never
+written by a merge. L8 is the top delta level and is not merged further in this
+version).
+Unlike the old per-process counter, the trigger is evaluated after every
+successful write from the durable manifest, so evicting the database from the
+resident LRU does not reset it. `compaction_interval` is retained for
+configuration compatibility and no longer controls the trigger. A pass runs
+under a separate compaction lease outside the write lease, so a slow merge
+never extends a write. The manifest is updated under the write lease before
+merged sources are deleted, and those sources are removed only after
 `compaction_retention_ms`, so a read that planned on them can finish. A
 compaction pass is bounded by `compaction_timeout_ms`; a failure is recorded in
 metrics and never fails the write that triggered it.
@@ -792,7 +798,7 @@ Go `runtime.Config` (defaults from spec §16):
 | `Lease.Duration` | 30s | Must exceed request timeout + skew (validated) |
 | `Lease.ClockSkewAllowance` | 2s | Expiry safety margin |
 | `Lease.AcquireRetryBudget` | 3s | Total bounded retry window |
-| `Lease.RetryBackoffMin/Max` | 25ms / 500ms | Jittered backoff |
+| `Lease.RetryBackoffMin/Max` | 25ms / 500ms | Exponential jittered backoff bounds |
 | `RetryPolicy.FixedDelay` | 1s | Initial outer retry delay |
 | `RetryPolicy.FixedRetries` | 10 | Fixed-delay retry count before exponential backoff |
 | `RetryPolicy.Multiplier` | 2 | Exponential delay multiplier |
@@ -803,6 +809,7 @@ Go `runtime.Config` (defaults from spec §16):
 | `Litestream.VFSPageCacheBytes` | `0` | Per-database SQLite page cache; `0` disables it (opt in explicitly) |
 | `MaxTempWriteBuffer` | 256 MiB | Per-process write-buffer cap; `<=0` disables the cap |
 | `MaxReadResultBytes` | 64 MiB | One read's marshaled-row cap; `<=0` disables the cap |
+| `Compaction.Workers` | 4 | Concurrent compaction passes per process; same-database passes are serialized by the compaction lease |
 | `RequireFlushBeforeRelease` | `true` | **Must stay true**; runtime rejects `false` |
 
 Reads fetch only the pages SQLite requests and cache them up to

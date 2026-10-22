@@ -102,7 +102,7 @@ path — no conditional-write support required. Leases live in Redis/Valkey
 Backblaze B2, Sliplane) are acceptable as long as reads observe completed
 PUTs (read-after-write) and listings expose the expected LTX state.
 
-The runtime compacts the LTX chain into higher levels (L0 through L8; L9 is Litestream's snapshot level and is never written by a merge) and deletes source files whose whole TXID range a higher level covers. A merge runs in a background worker under a **separate compaction lease** (`lease.Manager.AcquireKey`), outside the write lease, so a slow compaction never extends a write. The durable manifest is updated **under the write lease** before any source file is deleted, so no reader ever plans against a file that is already gone; superseded objects are removed by an opportunistic GC after the retention window. Bucket lifecycle policies are never consulted, so the chain stays bounded on any plain object store.
+The runtime compacts the LTX chain into higher levels (L0 through L7 merge into L8; L9 is Litestream's snapshot level and is never written by a merge, and L8 is the top delta level in this version) and deletes source files whose whole TXID range a higher level covers. A merge runs in a bounded background worker pool under a **separate compaction lease** (`lease.Manager.AcquireKey`), outside the write lease, so a slow compaction never extends a write. The trigger is the durable manifest written by each successful mutation, not a resident-process counter, so eviction of the database VFS does not stop compaction. The durable manifest is updated **under the write lease** before any source file is deleted, so no reader ever plans against a file that is already gone; superseded objects are removed by an opportunistic GC after the retention window. Bucket lifecycle policies are never consulted, so the levels below L8 stay bounded on any plain object store.
 
 Opening a database reads `replica/manifest.json` instead of probing `HasLTX` and listing ten levels (plus one LIST per level for the restore plan). Legacy replicas without a manifest fall back to listing and are migrated on the next write; a level-0 tail check repairs a level-0 file left unindexed by a failed manifest PUT.
 
@@ -176,7 +176,7 @@ Each logical mutation acquires the lease before any SQLite write begins:
 4. If held and unexpired, do not write. Return a retryable busy result or wait using bounded, jittered retry.
 5. On conditional conflict, reread and repeat with backoff. Never overwrite without the retrieved token.
 
-Lease acquisition must be single-flight inside an API process for the same database ID to avoid local thundering herds. The Redis/Valkey CAS remains the authority across processes.
+Lease acquisition must be single-flight inside an API process for the same database ID to avoid local thundering herds. Local waiters are woken by the holder's release instead of each paying the cross-process jittered backoff; the Redis/Valkey CAS remains the authority across processes. Writes to one database are still serialized by design, so same-database throughput is bounded by one transaction and flush at a time.
 
 Auxiliary leases that must not collide with the write lease use `lease.Manager.AcquireKey` on a derived key (for example a compaction lock). They follow the same CAS protocol and namespace as the write lease, so a compaction lock and a write lock for the same database never contend on one key.
 
@@ -199,7 +199,7 @@ lease:
   duration: 30s
   clock_skew_allowance: 2s
   acquire_retry_budget: 3s
-  retry_backoff: 25ms..500ms
+  retry_backoff: exponential 25ms..500ms
 ```
 
 The lease duration must exceed the configured request timeout plus expected remote-flush time plus skew allowance. The holder heartbeats the lease while it is held: every third of the duration it extends `expires_at` with a conditional CAS (rotating the fencing token), capped at three lease durations of total hold. A slow-but-correct mutation or flush therefore cannot lose its fence to a successor; a wedged holder stops heartbeating at the cap and is taken over exactly like a crash. A request must abort and leave the lease to expire if it cannot complete safely at all.
@@ -281,6 +281,7 @@ runtime:
   compaction_threshold: 8
   compaction_retention_ms: 600000
   compaction_timeout_ms: 30000
+  compaction_workers: 4
   max_total_cache_bytes: 2147483648
   max_temp_write_buffer_bytes: 268435456
   hydration_enabled: false

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -238,4 +239,136 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 	if rows != writes+1 {
 		t.Fatalf("rows = %d, want %d", rows, writes+1)
 	}
+}
+
+// TestCompactionSurvivesVFSEviction is the multi-tenant regression: a
+// database written once every few tenant touches is evicted from the resident
+// LRU between writes. Compaction must trigger from the durable manifest, not
+// from a counter that resets with the VFS.
+func TestCompactionSurvivesVFSEviction(t *testing.T) {
+	root := t.TempDir()
+	cfg := runtime.DefaultConfig()
+	cfg.Litestream.WriteBufferRootPath = t.TempDir()
+	cfg.MaxReadInstances = 2
+	cfg.ReadInstanceIdleTTL = time.Hour
+	cfg.RetryPolicy = runtime.RetryPolicy{}
+	cfg.Compaction = runtime.CompactionConfig{
+		Enabled:   true,
+		Interval:  1,
+		Threshold: 2,
+		Retention: 0,
+		Timeout:   10 * time.Second,
+		Workers:   2,
+	}
+
+	rt, err := runtime.New(lease.NewMemoryStore(), "compaction-eviction", cfg)
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer rt.Close()
+	ctx := context.Background()
+	descriptor := func(id string) runtime.DatabaseDescriptor {
+		return runtime.DatabaseDescriptor{
+			DatabaseID: id,
+			Storage: litestream.Profile{
+				Provider:   "file",
+				FileRoot:   root,
+				RootPrefix: "orgs/o1",
+			},
+			Credentials: runtime.StaticCredentials{AccessKeyID: "k", SecretAccessKey: "s"},
+		}
+	}
+
+	a := descriptor("users/evicted")
+	write := func(i int) {
+		t.Helper()
+		if _, err := rt.WithWrite(ctx, a, fmt.Sprintf("evicted-%d", i), func(conn *sql.Conn) error {
+			_, err := conn.ExecContext(ctx, `INSERT INTO notes (id) VALUES (?)`, i)
+			return err
+		}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if _, err := rt.WithWrite(ctx, a, "schema", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `CREATE TABLE notes (id INTEGER PRIMARY KEY)`)
+		return err
+	}); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	const writes = 20
+	for i := 0; i < writes; i++ {
+		write(i)
+		// Evict A from the two-entry LRU between every write, which is what
+		// happens to a sparse tenant in a process with many active databases.
+		for _, other := range []string{"users/other-b", "users/other-c"} {
+			if err := rt.WithRead(ctx, descriptor(other), func(*sql.Conn) error { return nil }); err != nil {
+				t.Fatalf("evict %s: %v", other, err)
+			}
+		}
+	}
+
+	replicaDir := filepath.Join(root, "orgs/o1/users/evicted/replica")
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		counts := countLTXByLevel(t, replicaDir)
+		bounded := true
+		for level := 0; level < 8; level++ {
+			if counts[level] > cfg.Compaction.Threshold {
+				bounded = false
+				break
+			}
+		}
+		if rt.MetricsTotal().Compactions > 0 && bounded && maxLTXLevel(counts) >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("compaction did not bound the evicted chain: levels=%v metrics=%+v", counts, rt.MetricsTotal())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	var rows int
+	if err := rt.WithRead(ctx, a, func(conn *sql.Conn) error {
+		return conn.QueryRowContext(ctx, `SELECT count(*) FROM notes`).Scan(&rows)
+	}); err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	if rows != writes {
+		t.Fatalf("rows = %d, want %d", rows, writes)
+	}
+}
+
+func countLTXByLevel(t *testing.T, dir string) map[int]int {
+	t.Helper()
+	counts := make(map[int]int)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".ltx") {
+			return nil
+		}
+		levelDir := filepath.Base(filepath.Dir(path))
+		var level int
+		if _, err := fmt.Sscanf(levelDir, "%04d", &level); err != nil {
+			return fmt.Errorf("parse level directory %q: %w", levelDir, err)
+		}
+		counts[level]++
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("walk replica: %v", err)
+	}
+	return counts
+}
+
+func maxLTXLevel(counts map[int]int) int {
+	max := -1
+	for level, n := range counts {
+		if n > 0 && level > max {
+			max = level
+		}
+	}
+	return max
 }

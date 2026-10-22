@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/superfly/ltx"
+
 	"walrusd/cache"
 	"walrusd/identity"
 	"walrusd/lease"
@@ -45,11 +47,19 @@ type Config struct {
 // lease, after a write has flushed, so the chain the next writer appends to
 // is already small.
 type CompactionConfig struct {
-	Enabled   bool
-	Interval  int           // writes between compaction checks
+	Enabled bool
+	// Interval is retained for configuration compatibility. Compaction is
+	// now triggered by durable manifest level counts after every write, not
+	// by a resident-entry write counter (which reset whenever the database's
+	// VFS was evicted).
+	Interval  int
 	Threshold int           // files per level that trigger a merge
 	Retention time.Duration // age before merged sources are deleted
 	Timeout   time.Duration // bound on one compaction pass
+	// Workers is the number of background compaction passes this process may
+	// run concurrently. Each pass works on a different database (the
+	// per-database compaction lease serializes same-database passes).
+	Workers int
 }
 
 // DefaultConfig returns the starting configuration from spec §16.
@@ -69,6 +79,7 @@ func DefaultConfig() Config {
 			Threshold: 8,
 			Retention: 10 * time.Minute,
 			Timeout:   30 * time.Second,
+			Workers:   4,
 		},
 		RequireFlushBeforeRelease: true,
 	}
@@ -83,10 +94,11 @@ type Runtime struct {
 	reads            *cache.Cache
 	metrics          *observability.Registry
 
-	compactCh     chan compactionJob
-	compactCancel context.CancelFunc
-	compactWG     sync.WaitGroup
-	compactPasses atomic.Int64
+	compactCh      chan compactionJob
+	compactCancel  context.CancelFunc
+	compactWG      sync.WaitGroup
+	compactPasses  atomic.Int64
+	compactPending sync.Map // database key -> one queued/running pass
 
 	mu      sync.Mutex
 	dbs     map[string]*list.Element // database key -> registered VFS
@@ -100,6 +112,7 @@ type Runtime struct {
 type compactionJob struct {
 	descriptor DatabaseDescriptor
 	id         identity.DatabaseID
+	key        string // registered database key, for pending dedup
 }
 
 type databaseEntry struct {
@@ -107,9 +120,6 @@ type databaseEntry struct {
 	vfs     *litestream.Database
 	refs    int
 	evicted bool
-	// writes counts successful writes since the process opened this database;
-	// every Interval-th write runs a compaction pass under the held lease.
-	writes atomic.Int64
 }
 
 var errReadSessionClosed = errors.New("runtime: cached read session closed")
@@ -186,8 +196,14 @@ func New(store lease.Store, owner string, cfg Config) (*Runtime, error) {
 		ctx, cancel := context.WithCancel(context.Background())
 		rt.compactCancel = cancel
 		rt.compactCh = make(chan compactionJob, 256)
-		rt.compactWG.Add(1)
-		go rt.compactionLoop(ctx)
+		workers := cfg.Compaction.Workers
+		if workers <= 0 {
+			workers = 4
+		}
+		for i := 0; i < workers; i++ {
+			rt.compactWG.Add(1)
+			go rt.compactionLoop(ctx)
+		}
 	}
 	return rt, nil
 }
@@ -791,6 +807,7 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 	// manifest present this is the commit record for the new LTX file; a
 	// failure is not acknowledged. A legacy replica gets a one-time manifest
 	// (built from a listing) so subsequent opens avoid level listings.
+	var compactionFiles []*ltx.FileInfo
 	if hasManifest {
 		files := session.ManifestFiles()
 		if files == nil {
@@ -800,42 +817,59 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 			session.Close()
 			return zero, r.flushFailure(ctx, held, walrusderr.Wrap(walrusderr.ClassFlushFailed, "manifest update not confirmed", err))
 		}
+		compactionFiles = files
 	} else if files, berr := vfs.BuildManifest(ctx); berr == nil {
 		if werr := vfs.WriteManifest(ctx, files); werr != nil {
 			r.metrics.Record(dbKey, func(m *observability.Metrics) { m.CompactionFailures++ })
+		} else {
+			compactionFiles = files
 		}
 	}
 	// A cached read session may still hold the pre-write index. Drop it so
 	// the next read opens at the flushed remote state.
 	r.reads.Evict(vfs.Key)
+	// Close before releasing the lease. The next writer can acquire
+	// immediately after Release and reuses this database's write VFS; its
+	// buffer root and captured file entries must be cleaned before that
+	// happens. Closing while the lease is still held costs only local
+	// cleanup, not a remote round trip.
+	session.Close()
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
 		if walrusderr.ClassOf(err) == walrusderr.ClassLeaseConflict {
 			r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleaseConflicts++ })
 		}
-		session.Close()
 		return zero, err
 	}
 	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleased++ })
-	session.Close()
-	// Compaction runs outside the request and outside the write lease. A
-	// dropped enqueue is harmless: the next write re-enqueues.
-	if r.cfg.Compaction.Enabled && r.cfg.Compaction.Interval > 0 &&
-		entry.writes.Add(1)%int64(r.cfg.Compaction.Interval) == 0 {
-		r.enqueueCompaction(d, db)
-	}
+	// Compaction runs outside the request and outside the write lease. The
+	// trigger is the durable manifest just written, not a resident-entry
+	// counter: a database evicted from the LRU between writes must still
+	// compact once any level crosses the threshold. A dropped enqueue is
+	// harmless because the next write re-checks the same manifest state.
+	r.enqueueCompaction(d, db, entry.key, compactionFiles)
 	return result, nil
 }
 
-// enqueueCompaction schedules one best-effort pass. The queue is bounded and
-// lossy: the next write re-enqueues, so a full queue never blocks a request.
-func (r *Runtime) enqueueCompaction(d DatabaseDescriptor, db identity.DatabaseID) {
-	if r.compactCh == nil {
+// enqueueCompaction schedules one best-effort pass when the durable manifest
+// shows a level over the threshold. The queue is bounded and lossy: the next
+// write re-checks the manifest, so a full queue never blocks a request.
+// compactPending keeps at most one queued or running pass per database, so a
+// chain that stays over threshold cannot flood the queue with duplicates.
+func (r *Runtime) enqueueCompaction(d DatabaseDescriptor, db identity.DatabaseID, dbKey string, files []*ltx.FileInfo) {
+	if r.compactCh == nil || !r.cfg.Compaction.Enabled {
+		return
+	}
+	if !litestream.ManifestNeedsCompaction(files, r.cfg.Compaction.Threshold) {
+		return
+	}
+	if _, loaded := r.compactPending.LoadOrStore(dbKey, struct{}{}); loaded {
 		return
 	}
 	select {
-	case r.compactCh <- compactionJob{descriptor: d, id: db}:
+	case r.compactCh <- compactionJob{descriptor: d, id: db, key: dbKey}:
 	default:
+		r.compactPending.Delete(dbKey)
 	}
 }
 
@@ -866,12 +900,21 @@ func (r *Runtime) runCompaction(parent context.Context, job compactionJob) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
+	dbKey := job.id.String()
+	pendingKey := job.key
+	if pendingKey == "" {
+		pendingKey = dbKey
+	}
+	// Clear the dedup marker only after the pass finishes, so a write that
+	// observes the same over-threshold manifest cannot enqueue a duplicate
+	// while this pass is still running.
+	defer r.compactPending.Delete(pendingKey)
+
 	entry, err := r.database(job.descriptor, job.id)
 	if err != nil {
 		return
 	}
 	defer r.releaseDatabase(entry)
-	dbKey := job.id.String()
 
 	files, ok, err := entry.vfs.ReadManifest(ctx)
 	if err != nil || !ok || len(files) == 0 {

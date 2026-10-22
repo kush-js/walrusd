@@ -80,7 +80,17 @@ type Manager struct {
 	// singleFlight serializes acquisition for the same database ID inside
 	// one process (spec §7.2).
 	flightMu sync.Mutex
-	flights  map[string]*sync.Mutex
+	flights  map[string]*flight
+}
+
+// flight is the per-key local acquisition queue. Callers that find the lease
+// held wait on ch instead of sleeping for a random backoff; Release closes the
+// channel so the next local waiter can retry immediately. Cross-process
+// contention still falls back to the jittered timer.
+type flight struct {
+	mu   sync.Mutex
+	ch   chan struct{}
+	refs int
 }
 
 // keyFunc derives the lease key for a database.
@@ -99,7 +109,7 @@ func NewManager(store Store, owner string, cfg Config, keyFn keyFunc) *Manager {
 		cfg:     cfg,
 		owner:   owner,
 		keys:    keyFn,
-		flights: make(map[string]*sync.Mutex),
+		flights: make(map[string]*flight),
 	}
 }
 
@@ -193,30 +203,35 @@ func (m *Manager) acquireSingleFlight(ctx context.Context, db identity.DatabaseI
 	m.flightMu.Lock()
 	fl, ok := m.flights[key]
 	if !ok {
-		fl = &sync.Mutex{}
+		fl = &flight{ch: make(chan struct{})}
 		m.flights[key] = fl
 	}
+	fl.refs++
 	m.flightMu.Unlock()
 
-	fl.Lock()
-	held, err := m.acquireLocked(ctx, db, key)
-	fl.Unlock()
-	// Drop the per-key mutex once uncontended. Acquisition correctness
-	// lives in the store CAS, so a later caller creating a fresh mutex can
-	// at worst contend twice inside one process — the map stays bounded by
-	// in-flight acquisitions, not by databases ever seen.
+	fl.mu.Lock()
+	held, err := m.acquireLocked(ctx, db, key, fl)
+	fl.mu.Unlock()
+	// Drop the queue once no caller is waiting on it. The map stays bounded
+	// by in-flight acquisitions, not by databases ever seen.
 	m.flightMu.Lock()
-	if m.flights[key] == fl {
+	fl.refs--
+	if fl.refs <= 0 && m.flights[key] == fl {
 		delete(m.flights, key)
 	}
 	m.flightMu.Unlock()
 	return held, err
 }
 
-func (m *Manager) acquireLocked(ctx context.Context, db identity.DatabaseID, key string) (*Held, error) {
+func (m *Manager) acquireLocked(ctx context.Context, db identity.DatabaseID, key string, fl *flight) (*Held, error) {
 	start := time.Now() // monotonic; the budget must not depend on cfg.Now
 	var lastErr error
+	attempt := 0
 	for {
+		// Capture the notification channel before checking the store. If a
+		// local Release happens between the check and the wait, the closed
+		// channel wakes us immediately.
+		waitCh := m.waitChannel(fl)
 		held, err := m.acquireOnce(ctx, db, key)
 		if err == nil {
 			return held, nil
@@ -228,15 +243,77 @@ func (m *Manager) acquireLocked(ctx context.Context, db identity.DatabaseID, key
 		if time.Since(start) > m.cfg.AcquireRetryBudget || ctx.Err() != nil {
 			break
 		}
-		// Bounded, jittered backoff (spec §7.4: 25ms..500ms).
+		// A local release wakes us immediately. The jittered timer remains
+		// the fallback for a lease held by another process (spec §7.4:
+		// 25ms..500ms).
+		timer := time.NewTimer(m.retryDelay(attempt))
 		select {
-		case <-time.After(jitter(m.cfg.RetryBackoffMin, m.cfg.RetryBackoffMax)):
+		case <-waitCh:
+			timer.Stop()
+		case <-timer.C:
 		case <-ctx.Done():
+			timer.Stop()
 			return nil, ctx.Err()
 		}
+		attempt++
 	}
 	_ = lastErr
 	return nil, walrusderr.Busy("lease held by another owner", int64(m.cfg.RetryBackoffMax/time.Millisecond))
+}
+
+// retryDelay grows from RetryBackoffMin toward RetryBackoffMax, with jitter in
+// the upper half of each step. Uniform 25..500 ms polling made a momentarily
+// held lease cost a few hundred milliseconds even when the holder released
+// immediately; exponential backoff retries quickly first and backs off only
+// under sustained contention.
+func (m *Manager) retryDelay(attempt int) time.Duration {
+	min := m.cfg.RetryBackoffMin
+	if min <= 0 {
+		min = 25 * time.Millisecond
+	}
+	max := m.cfg.RetryBackoffMax
+	if max <= 0 {
+		max = 500 * time.Millisecond
+	}
+	if max < min {
+		max = min
+	}
+	delay := min
+	for i := 0; i < attempt && delay < max; i++ {
+		if delay > max/2 {
+			delay = max
+			break
+		}
+		delay *= 2
+	}
+	if delay > max {
+		delay = max
+	}
+	low := delay / 2
+	if low < min {
+		low = min
+	}
+	return jitter(low, delay)
+}
+
+// waitChannel returns the current local release notification channel for a
+// key. The channel is closed and replaced by notifyWaiters on release.
+func (m *Manager) waitChannel(fl *flight) <-chan struct{} {
+	m.flightMu.Lock()
+	ch := fl.ch
+	m.flightMu.Unlock()
+	return ch
+}
+
+// notifyWaiters wakes local acquisition waiters after a release. Cross-process
+// waiters are unaffected and continue to use their jittered timer.
+func (m *Manager) notifyWaiters(key string) {
+	m.flightMu.Lock()
+	if fl := m.flights[key]; fl != nil {
+		close(fl.ch)
+		fl.ch = make(chan struct{})
+	}
+	m.flightMu.Unlock()
 }
 
 // errRetry signals "reread and retry" (CAS conflict, busy lease, lost race).
@@ -405,11 +482,16 @@ func (m *Manager) Release(ctx context.Context, held *Held) error {
 	}
 	_, err = m.store.ReplaceIfToken(ctx, held.key, version, body)
 	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+		// The token moved, so the lease is no longer ours. Wake local
+		// waiters to re-read the store rather than sitting on the jittered
+		// timer.
+		m.notifyWaiters(held.key)
 		return walrusderr.New(walrusderr.ClassLeaseConflict, "stale lease release (successor owns lease)")
 	}
 	if err != nil {
 		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "release lease", err)
 	}
+	m.notifyWaiters(held.key)
 	return nil
 }
 

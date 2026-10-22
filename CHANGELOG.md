@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Compaction survives VFS eviction.** The trigger is now the durable manifest written after each successful mutation, not an in-memory write counter tied to the resident database entry. A sparse tenant evicted between writes can no longer grow an unbounded L0 chain. The compaction pass also checks every compactable level instead of stopping at the first level below threshold, so a busy higher level still merges.
+- **Compaction runs in a bounded worker pool.** `Compaction.Workers` / `compaction_workers` defaults to 4. A per-database pending marker keeps at most one queued or running pass, so an over-threshold chain cannot flood the queue. `compaction_interval` is retained for configuration compatibility but no longer controls the trigger.
+- **Local lease waiters wake on release.** Same-process writers queued behind one database lease now wait on a release notification instead of each paying the 25–500 ms cross-process jittered backoff. Redis/Valkey CAS remains the cross-process authority, and same-database writes remain serialized by design.
+- **Lease retry backs off exponentially.** Cross-process waiters start at `retry_backoff_min` (25 ms) and double toward `retry_backoff_max` (500 ms), instead of choosing uniformly across the whole range on every attempt. A momentarily held lease no longer costs a few hundred milliseconds.
+
 ## 0.6.0
 
 Production-hardening pass from a full pre-production audit, rebased onto 0.5.17's durable-manifest and async-compaction architecture. Several response values and one config knob change.

@@ -135,9 +135,11 @@ export interface RuntimeOptions {
    *  database), so this can stay on when replicaCacheBytes is 0. Set 0 to
    *  list every level on every VFS open. */
   levelListingCacheTtlMs?: number;
-  /** Compact the replica chain after every N writes. Default: true. */
+  /** Enable replica-chain compaction. Default: true. */
   compactionEnabled?: boolean;
-  /** Writes between compaction checks. Default: 8. */
+  /** Retained for compatibility. Compaction is now triggered after every
+   *  successful write when the durable manifest shows a level over
+   *  `compactionThreshold`; this value no longer controls the trigger. */
   compactionInterval?: number;
   /** Files per level that trigger a merge. Default: 8. */
   compactionThreshold?: number;
@@ -147,6 +149,10 @@ export interface RuntimeOptions {
   compactionRetentionMs?: number;
   /** Bound on one compaction pass, in milliseconds. Default: 30000. */
   compactionTimeoutMs?: number;
+  /** Background compaction passes this process may run concurrently.
+   *  Default: 4. Same-database passes are serialized by the compaction
+   *  lease. */
+  compactionWorkers?: number;
   /** Per-process temporary write-buffer cap in bytes. Default: 268435456
    *  (256 MiB). Values at or below 0 disable the cap. */
   maxTempWriteBuffer?: number;
@@ -324,6 +330,7 @@ export class WalrusdDatabase {
           compaction_threshold: options.compactionThreshold,
           compaction_retention_ms: options.compactionRetentionMs,
           compaction_timeout_ms: options.compactionTimeoutMs,
+          compaction_workers: options.compactionWorkers,
           max_temp_write_buffer: options.maxTempWriteBuffer,
           max_read_result_bytes: options.maxReadResultBytes,
           redis_address: options.redisAddress,
