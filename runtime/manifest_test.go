@@ -115,7 +115,7 @@ func TestCompactionUpdatesManifest(t *testing.T) {
 		Enabled:   true,
 		Interval:  1,
 		Threshold: 2,
-		Retention: 0,
+		Retention: time.Minute,
 		Timeout:   10 * time.Second,
 	})
 	defer rt.Close()

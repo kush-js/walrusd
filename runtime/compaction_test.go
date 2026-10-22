@@ -4,12 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/superfly/ltx"
 
 	"walrusd/lease"
 	"walrusd/litestream"
@@ -28,7 +27,7 @@ func TestCompactionBoundsReplicaChain(t *testing.T) {
 		Enabled:   true,
 		Interval:  2,
 		Threshold: 2,
-		Retention: 0,
+		Retention: time.Minute,
 		Timeout:   10 * time.Second,
 	}
 
@@ -70,36 +69,20 @@ func TestCompactionBoundsReplicaChain(t *testing.T) {
 		})
 	}
 
-	// Every flush writes one LTX file; compaction must keep the chain well
+	// Every flush writes one LTX file; compaction must keep the manifest well
 	// below the number of writes. Compaction is asynchronous, so wait for it.
-	var ltxFiles int
-	replicaDir := filepath.Join(root, "orgs/o1/users/u1/replica")
-	countFiles := func() int {
-		t.Helper()
-		var n int
-		if err := filepath.WalkDir(replicaDir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() && strings.HasSuffix(d.Name(), ".ltx") {
-				n++
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("walk replica: %v", err)
-		}
-		return n
-	}
+	manifestPath := filepath.Join(root, "orgs/o1/users/u1/replica/manifest.json")
 	deadline := time.Now().Add(10 * time.Second)
+	var manifestFiles []*ltx.FileInfo
 	for {
-		ltxFiles = countFiles()
-		if ltxFiles <= 8 || time.Now().After(deadline) {
+		manifestFiles = readManifest(t, manifestPath)
+		if len(manifestFiles) <= 8 || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if ltxFiles > 8 {
-		t.Fatalf("replica holds %d LTX files after %d writes, want the chain bounded", ltxFiles, writes)
+	if len(manifestFiles) > 8 {
+		t.Fatalf("manifest holds %d LTX entries after %d writes, want the chain bounded", len(manifestFiles), writes)
 	}
 
 	// Compaction must not lose data: every row is still readable from a
@@ -146,24 +129,6 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 		return rt
 	}
 
-	countFiles := func() int {
-		t.Helper()
-		n := 0
-		err := filepath.WalkDir(filepath.Join(root, "orgs/o1/users/u1/replica"), func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() && strings.HasSuffix(d.Name(), ".ltx") {
-				n++
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk replica: %v", err)
-		}
-		return n
-	}
-
 	write := func(rt *runtime.Runtime, key string, fn func(*sql.Conn) error) {
 		t.Helper()
 		if _, err := rt.WithWrite(ctx, desc, key, fn); err != nil {
@@ -184,9 +149,10 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 			return err
 		})
 	}
-	before := countFiles()
+	manifestPath := filepath.Join(root, "orgs/o1/users/u1/replica/manifest.json")
+	before := len(readManifest(t, manifestPath))
 	if before < writes {
-		t.Fatalf("expected a long chain before compaction, got %d files", before)
+		t.Fatalf("expected a long chain before compaction, got %d manifest entries", before)
 	}
 	if err := off.Close(); err != nil {
 		t.Fatalf("close off runtime: %v", err)
@@ -196,7 +162,7 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 		Enabled:   true,
 		Interval:  1,
 		Threshold: 4,
-		Retention: 0,
+		Retention: time.Minute,
 		Timeout:   30 * time.Second,
 	})
 	defer on.Close()
@@ -210,7 +176,7 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 	var after int
 	for {
 		total = on.MetricsTotal()
-		after = countFiles()
+		after = len(readManifest(t, manifestPath))
 		if total.Compactions > 0 && after < before {
 			break
 		}
@@ -226,9 +192,9 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 		t.Fatal("compaction did not run")
 	}
 	if after >= before {
-		t.Fatalf("chain did not shrink: before=%d after=%d", before, after)
+		t.Fatalf("manifest did not shrink: before=%d after=%d", before, after)
 	}
-	t.Logf("chain: %d -> %d files, compactions=%d levels=%d", before, after, total.Compactions, total.CompactedLevels)
+	t.Logf("manifest: %d -> %d entries, compactions=%d levels=%d", before, after, total.Compactions, total.CompactedLevels)
 
 	var rows int
 	if err := on.WithRead(ctx, desc, func(conn *sql.Conn) error {
@@ -256,7 +222,7 @@ func TestCompactionSurvivesVFSEviction(t *testing.T) {
 		Enabled:   true,
 		Interval:  1,
 		Threshold: 2,
-		Retention: 0,
+		Retention: time.Minute,
 		Timeout:   10 * time.Second,
 		Workers:   2,
 	}
@@ -308,10 +274,10 @@ func TestCompactionSurvivesVFSEviction(t *testing.T) {
 		}
 	}
 
-	replicaDir := filepath.Join(root, "orgs/o1/users/evicted/replica")
+	manifestPath := filepath.Join(root, "orgs/o1/users/evicted/replica/manifest.json")
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		counts := countLTXByLevel(t, replicaDir)
+		counts := manifestLevelCounts(readManifest(t, manifestPath))
 		bounded := true
 		for level := 0; level < 8; level++ {
 			if counts[level] > cfg.Compaction.Threshold {
@@ -319,7 +285,7 @@ func TestCompactionSurvivesVFSEviction(t *testing.T) {
 				break
 			}
 		}
-		if rt.MetricsTotal().Compactions > 0 && bounded && maxLTXLevel(counts) >= 2 {
+		if rt.MetricsTotal().Compactions > 0 && bounded && maxManifestLevel(counts) >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -339,31 +305,15 @@ func TestCompactionSurvivesVFSEviction(t *testing.T) {
 	}
 }
 
-func countLTXByLevel(t *testing.T, dir string) map[int]int {
-	t.Helper()
+func manifestLevelCounts(files []*ltx.FileInfo) map[int]int {
 	counts := make(map[int]int)
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".ltx") {
-			return nil
-		}
-		levelDir := filepath.Base(filepath.Dir(path))
-		var level int
-		if _, err := fmt.Sscanf(levelDir, "%04d", &level); err != nil {
-			return fmt.Errorf("parse level directory %q: %w", levelDir, err)
-		}
-		counts[level]++
-		return nil
-	})
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("walk replica: %v", err)
+	for _, f := range files {
+		counts[f.Level]++
 	}
 	return counts
 }
 
-func maxLTXLevel(counts map[int]int) int {
+func maxManifestLevel(counts map[int]int) int {
 	max := -1
 	for level, n := range counts {
 		if n > 0 && level > max {
