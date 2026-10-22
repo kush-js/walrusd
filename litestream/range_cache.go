@@ -13,10 +13,9 @@ import (
 )
 
 // Litestream re-reads every file in the replica chain on each VFS open: the
-// header, the page index, and the trailer arrive as separate ranged GETs. The
-// chain grows by one file per write and WALrus never compacts, so without a
-// cache the cost of an open grows with the database's write count — and every
-// write pays it, because writes are not session-cached.
+// header, the page index, and the trailer arrive as separate ranged GETs.
+// WALrus now bounds the chain with compaction and indexes it in a durable
+// manifest, but these caches remain available for callers that opt in.
 //
 // LTX files are immutable once written: a (level, minTXID, maxTXID) key names
 // the same bytes forever. Caching the whole file (they are per-user segments,
@@ -29,11 +28,9 @@ const defaultFileCacheBytes = 32 << 20
 const maxCachedFileBytes = 8 << 20
 
 // defaultLevelListingTTL bounds how long a non-tail level's listing is
-// trusted. WALrus never compacts (levels 1..9 are only written by a
-// compactor), so those listings are stable; the TTL is a backstop against an
-// out-of-process compactor, and every in-process write/delete invalidates its
-// level. Listing entries are metadata only — a few hundred bytes per database
-// — so this can stay on when the file cache is disabled for memory.
+// trusted. The TTL is a backstop against an out-of-process compactor, and
+// every in-process write/delete invalidates its level. Listing entries are
+// metadata only — a few hundred bytes per database.
 const defaultLevelListingTTL = 30 * time.Second
 
 type fileKey struct {

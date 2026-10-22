@@ -12,6 +12,7 @@ import (
 
 	"walrusd/lease"
 	"walrusd/litestream"
+	"walrusd/observability"
 	"walrusd/runtime"
 )
 
@@ -69,19 +70,32 @@ func TestCompactionBoundsReplicaChain(t *testing.T) {
 	}
 
 	// Every flush writes one LTX file; compaction must keep the chain well
-	// below the number of writes.
+	// below the number of writes. Compaction is asynchronous, so wait for it.
 	var ltxFiles int
 	replicaDir := filepath.Join(root, "orgs/o1/users/u1/replica")
-	if err := filepath.WalkDir(replicaDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	countFiles := func() int {
+		t.Helper()
+		var n int
+		if err := filepath.WalkDir(replicaDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(d.Name(), ".ltx") {
+				n++
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("walk replica: %v", err)
 		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".ltx") {
-			ltxFiles++
+		return n
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ltxFiles = countFiles()
+		if ltxFiles <= 8 || time.Now().After(deadline) {
+			break
 		}
-		return nil
-	}); err != nil {
-		t.Fatalf("walk replica: %v", err)
+		time.Sleep(50 * time.Millisecond)
 	}
 	if ltxFiles > 8 {
 		t.Fatalf("replica holds %d LTX files after %d writes, want the chain bounded", ltxFiles, writes)
@@ -190,14 +204,26 @@ func TestCompactionMergesPreexistingChain(t *testing.T) {
 		return err
 	})
 
-	total := on.MetricsTotal()
+	deadline := time.Now().Add(10 * time.Second)
+	var total observability.Metrics
+	var after int
+	for {
+		total = on.MetricsTotal()
+		after = countFiles()
+		if total.Compactions > 0 && after < before {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if total.CompactionFailures > 0 {
 		t.Fatalf("compaction failures = %d", total.CompactionFailures)
 	}
 	if total.Compactions == 0 {
 		t.Fatal("compaction did not run")
 	}
-	after := countFiles()
 	if after >= before {
 		t.Fatalf("chain did not shrink: before=%d after=%d", before, after)
 	}

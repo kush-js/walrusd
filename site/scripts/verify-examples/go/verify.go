@@ -15,18 +15,18 @@ import (
 )
 
 func exampleDescriptor() runtime.DatabaseDescriptor {
-keyID, secret := "", ""
-d := runtime.DatabaseDescriptor{
-    DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
-    Storage: litestream.Profile{
-        Provider:   "s3",         // "s3" (any S3-compatible) or "file"
-        Endpoint:   "https://<account>.r2.cloudflarestorage.com",
-        Bucket:     "my-org-bucket",
-        RootPrefix: "tenants/acme",
-    },
-    Credentials: runtime.StaticCredentials{AccessKeyID: keyID, SecretAccessKey: secret},
-}
-return d
+	keyID, secret := "", ""
+	d := runtime.DatabaseDescriptor{
+		DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
+		Storage: litestream.Profile{
+			Provider:   "s3", // "s3" (any S3-compatible) or "file"
+			Endpoint:   "https://<account>.r2.cloudflarestorage.com",
+			Bucket:     "my-org-bucket",
+			RootPrefix: "tenants/acme",
+		},
+		Credentials: runtime.StaticCredentials{AccessKeyID: keyID, SecretAccessKey: secret},
+	}
+	return d
 }
 
 func readExample(
@@ -34,12 +34,12 @@ func readExample(
 	rt *runtime.Runtime,
 	d runtime.DatabaseDescriptor,
 ) error {
-err := rt.WithRead(ctx, d, func(conn *sql.Conn) error {
-    var body string
-    return conn.QueryRowContext(ctx,
-        `SELECT body FROM events WHERE id = ?`, 1).Scan(&body)
-})
-return err
+	err := rt.WithRead(ctx, d, func(conn *sql.Conn) error {
+		var body string
+		return conn.QueryRowContext(ctx,
+			`SELECT body FROM events WHERE id = ?`, 1).Scan(&body)
+	})
+	return err
 }
 
 func writeEvents(
@@ -47,24 +47,27 @@ func writeEvents(
 	rt *runtime.Runtime,
 	d runtime.DatabaseDescriptor,
 ) (runtime.WriteResult, error) {
-// First write for a fresh database: create the schema as its own write.
-_, err := rt.WithWrite(ctx, d, "create-schema", func(conn *sql.Conn) error {
-    _, err := conn.ExecContext(ctx,
-        `CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)`)
-    return err
-})
-if err != nil { panic(err) }
+	// First write for a fresh database: create the schema as its own write.
+	_, err := rt.WithWrite(ctx, d, "create-schema", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx,
+			`CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, body TEXT)`)
+		return err
+	})
+	if err != nil {
+		panic(err)
+	}
 
-res, err := rt.WithWrite(ctx, d, "create-event-42", func(conn *sql.Conn) error {
-    if _, err := conn.ExecContext(ctx,
-        `INSERT INTO events (id, body) VALUES (?, ?)`, 42, "hello"); err != nil {
-        return err
-    }
-    return nil
-})
-if err != nil { /* see error handling below */ }
-fmt.Println("durable at txid", res.TXID, "deduplicated:", res.Deduplicated)
-return res, err
+	res, err := rt.WithWrite(ctx, d, "create-event-42", func(conn *sql.Conn) error {
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO events (id, body) VALUES (?, ?)`, 42, "hello"); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil { /* see error handling below */
+	}
+	fmt.Println("durable at txid", res.TXID, "deduplicated:", res.Deduplicated)
+	return res, err
 }
 
 func handleWriteError(
@@ -74,10 +77,10 @@ func handleWriteError(
 	key string,
 	fn func(*sql.Conn) error,
 ) {
-_, err := rt.WithWrite(ctx, d, key, fn)
-if walrusderr.ClassOf(err) == walrusderr.ClassFlushFailed {
-    // safe: retry with the same idempotency key
-}
+	_, err := rt.WithWrite(ctx, d, key, fn)
+	if walrusderr.ClassOf(err) == walrusderr.ClassFlushFailed {
+		// safe: retry with the same idempotency key
+	}
 }
 
 func readValue(

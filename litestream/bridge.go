@@ -22,6 +22,9 @@ type wrapperVFS struct {
 	fileMu sync.Mutex
 	files  map[string]*ls.VFSFile // filename -> file
 
+	sessMu   sync.Mutex
+	sessions map[string]*vfsSession // filename -> session-scoped VFS
+
 	tempMu         sync.Mutex
 	bufferBase     string
 	bufferRoot     string
@@ -42,7 +45,11 @@ func (w *wrapperVFS) Open(name string, flags sqlite3vfs.OpenFlag) (sqlite3vfs.Fi
 		return &limitedFile{File: file, vfs: w}, retFlags, nil
 	}
 
-	file, retFlags, err := w.inner.Open(name, flags)
+	inner := w.inner
+	if sess := w.session(name); sess != nil {
+		inner = sess.inner
+	}
+	file, retFlags, err := inner.Open(name, flags)
 	if err != nil {
 		return nil, retFlags, err
 	}
@@ -108,6 +115,7 @@ type Database struct {
 	Profile       Profile // trusted storage profile (credentials resolved)
 	wrapper       *wrapperVFS
 	client        ls.ReplicaClient // shared by the read and write VFS
+	manifest      ManifestStore    // durable LTX index, written after each flush
 
 	writeMu      sync.Mutex
 	writeVFSName string
@@ -124,6 +132,10 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 	if b.files != nil || b.listingTTL > 0 {
 		shared = newCachingClient(client, dbKey, b.files, b.listingTTL)
 	}
+	manifest, err := b.NewManifestStore(replicaPrefix, p)
+	if err != nil {
+		return nil, err
+	}
 	w := b.newWrapperVFS(shared, false)
 	// Litestream requires a positive poll interval (its monitor builds a
 	// ticker from it) and a positive sync interval when write mode is on.
@@ -131,24 +143,57 @@ func (b *Bridge) RegisterDatabase(dbKey, replicaPrefix string, p Profile) (*Data
 	if err := registerVFS(name, w); err != nil {
 		return nil, fmt.Errorf("litestream: register vfs %s: %w", name, err)
 	}
-	return &Database{Bridge: b, VFSName: name, Key: dbKey, ReplicaPrefix: replicaPrefix, Profile: p, wrapper: w, client: shared}, nil
+	return &Database{Bridge: b, VFSName: name, Key: dbKey, ReplicaPrefix: replicaPrefix, Profile: p, wrapper: w, client: shared, manifest: manifest}, nil
 }
 
 func (b *Bridge) newWrapperVFS(client ls.ReplicaClient, write bool) *wrapperVFS {
-	w := &wrapperVFS{
+	return &wrapperVFS{
 		client:     client,
-		inner:      ls.NewVFS(client, noOpLogger()),
+		inner:      b.newInnerVFS(client, write),
 		files:      make(map[string]*ls.VFSFile),
+		sessions:   make(map[string]*vfsSession),
 		tempFiles:  make(map[string]string),
 		bufferBase: b.cfg.WriteBufferRootPath,
 		budget:     b.buffers,
 	}
-	w.inner.PollInterval = litestreamPollInterval
-	w.inner.CacheSize = b.cfg.VFSPageCacheBytes
-	w.inner.HydrationEnabled = b.cfg.HydrationEnabled
-	w.inner.WriteEnabled = write
-	w.inner.WriteSyncInterval = 0
-	return w
+}
+
+// newInnerVFS builds one Litestream VFS with the runtime's settings. A
+// session gets its own instance so its replica client can be backed by a
+// per-request manifest without sharing state across requests.
+func (b *Bridge) newInnerVFS(client ls.ReplicaClient, write bool) *ls.VFS {
+	v := ls.NewVFS(client, noOpLogger())
+	v.PollInterval = litestreamPollInterval
+	v.CacheSize = b.cfg.VFSPageCacheBytes
+	v.HydrationEnabled = b.cfg.HydrationEnabled
+	v.WriteEnabled = write
+	v.WriteSyncInterval = 0
+	return v
+}
+
+// vfsSession is one request-scoped VFS. For manifest-backed opens, inner
+// uses a manifestClient that answers LTXFiles from the durable manifest.
+type vfsSession struct {
+	inner  *ls.VFS
+	client *manifestClient
+}
+
+func (w *wrapperVFS) registerSession(name string, sess *vfsSession) {
+	w.sessMu.Lock()
+	w.sessions[name] = sess
+	w.sessMu.Unlock()
+}
+
+func (w *wrapperVFS) unregisterSession(name string) {
+	w.sessMu.Lock()
+	delete(w.sessions, name)
+	w.sessMu.Unlock()
+}
+
+func (w *wrapperVFS) session(name string) *vfsSession {
+	w.sessMu.Lock()
+	defer w.sessMu.Unlock()
+	return w.sessions[name]
 }
 
 // ensureWriteVFS registers the database's write-capable VFS exactly once.

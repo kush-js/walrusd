@@ -16,13 +16,10 @@ import (
 	"github.com/psanford/sqlite3vfs"
 )
 
-// Keep the dependency's unexported registry in sync with SQLite itself.
-// sqlite3vfs dispatches callbacks by the sqlite3_vfs name, so removing this
-// entry before SQLite stops dispatching to it would leave a live SQLite VFS
-// pointing at a missing Go object and crash in a later callback.
-//
-//go:linkname vfsMap github.com/psanford/sqlite3vfs.vfsMap
-var vfsMap map[string]sqlite3vfs.ExtendedVFSv1
+// Keep the dependency's registry in sync with SQLite itself. sqlite3vfs
+// dispatches callbacks by the sqlite3_vfs name, so removing this entry before
+// SQLite stops dispatching to it would leave a live SQLite VFS pointing at a
+// missing Go object and crash in a later callback.
 
 // unregisterVFS reclaims one process-global sqlite3vfs registration.
 //
@@ -43,8 +40,7 @@ func unregisterVFS(name string) error {
 			return fmt.Errorf("litestream: unregister sqlite vfs %q: sqlite code %d", name, int(rc))
 		}
 	}
-	if _, ok := vfsMap[name]; ok {
-		delete(vfsMap, name)
+	if sqlite3vfs.UnregisterVFS(name) {
 		decrementVFSCount()
 	}
 	return nil

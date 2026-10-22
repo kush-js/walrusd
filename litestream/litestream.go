@@ -51,8 +51,10 @@ type Config struct {
 // DefaultConfig returns the starting configuration from spec §16.
 func DefaultConfig() Config {
 	return Config{
-		WriteSyncInterval:    1000,
-		VFSPageCacheBytes:    10 * 1024 * 1024,
+		WriteSyncInterval: 1000,
+		// No page cache by default: the runtime treats compute as stateless
+		// and callers that want an in-process cache opt in explicitly.
+		VFSPageCacheBytes:    0,
 		HydrationEnabled:     false,
 		MaxTempWriteBuffer:   268435456,
 		ReplicaCacheBytes:    defaultFileCacheBytes,
@@ -77,11 +79,10 @@ type Bridge struct {
 // other's databases.
 var globalVFSSeq atomic.Uint64
 
-// vfsRegistryMu serializes sqlite3vfs.RegisterVFS with every SQLite VFS
-// callback. sqlite3vfs's process-global vfsMap has no mutex of its own, so
-// a plain RWMutex is wrong here: CGO dispatches VFS opens concurrently
-// with registration, and a read lock does not exclude the writer. Every
-// holder takes the full mutex, so registration and dispatch never overlap.
+// vfsRegistryMu serializes registration/unregistration with SQLite's C VFS
+// registry. The vendored sqlite3vfs keeps its Go dispatch map in a sync.Map,
+// so SQLite opens and SQL execution no longer take this lock; only registry
+// mutations do.
 var (
 	vfsRegistryMu    sync.Mutex
 	vfsRegistrations atomic.Uint64

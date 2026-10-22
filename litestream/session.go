@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	ls "github.com/benbjohnson/litestream"
 	_ "github.com/mattn/go-sqlite3" // registers the sqlite3 driver with VFS support
+	"github.com/superfly/ltx"
 )
 
 // Session is one request-scoped SQLite connection over a registered VFS.
@@ -27,6 +29,10 @@ type Session struct {
 	// held (invariant 5) and is discarded on close.
 	writeVFS *wrapperVFS
 
+	// sessionVFS is the wrapper that owns this session's request-scoped VFS
+	// state. It is nil for legacy opens that use the shared client.
+	sessionVFS *wrapperVFS
+
 	mu        sync.Mutex
 	writeFile *ls.VFSFile
 	writeOn   bool
@@ -36,31 +42,47 @@ type Session struct {
 var globalSessionSeq atomic.Uint64
 
 // OpenRead opens a read-only session against the remote replica state
-// (spec §9). No local database file is hydrated (invariant 11).
+// (spec §9). No local database file is hydrated (invariant 11). It uses the
+// shared replica client (legacy listing path); OpenReadWithManifest is the
+// manifest-backed path.
 func (d *Database) OpenRead(ctx context.Context, dbName string) (*Session, error) {
+	return d.OpenReadWithManifest(ctx, dbName, nil)
+}
+
+// OpenReadWithManifest opens a read session whose restore plan comes from the
+// durable manifest. A non-nil files slice (including an empty one) means the
+// manifest exists; nil means a legacy replica and the shared client lists
+// levels as before.
+func (d *Database) OpenReadWithManifest(ctx context.Context, dbName string, files []*ltx.FileInfo) (*Session, error) {
 	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
+	var state *vfsSession
+	if files != nil {
+		mc := newManifestClient(d.client, files)
+		state = &vfsSession{inner: d.Bridge.newInnerVFS(mc, false), client: mc}
+		d.wrapper.registerSession(fileName, state)
+	}
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=ro&_query_only=1", fileName, d.VFSName)
-	vfsRegistryMu.Lock()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
-		vfsRegistryMu.Unlock()
+		if state != nil {
+			d.wrapper.unregisterSession(fileName)
+		}
 		return nil, fmt.Errorf("litestream: open read: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	// The VFS open behind db.Conn can block in waitForRestorePlan past
-	// every caller deadline (uncancellable CGO on a sick replica). The
-	// acquisition stays on the caller's goroutine while holding the
-	// process-global registry mutex: registration and dispatch must never
-	// overlap (upstream's registry map has no lock of its own), so the
-	// full mutex — not a read lock — is held across the open. The
-	// caller's own context deadline bounds the wait.
+	// The VFS open behind db.Conn can block in waitForRestorePlan past every
+	// caller deadline (uncancellable CGO on a sick replica). The caller's own
+	// context deadline bounds the wait. The registry is a sync.Map in the
+	// vendored sqlite3vfs, so session opens do not serialize.
 	conn, err := db.Conn(ctx)
-	vfsRegistryMu.Unlock()
 	if err != nil {
 		db.Close()
+		if state != nil {
+			d.wrapper.unregisterSession(fileName)
+		}
 		return nil, fmt.Errorf("litestream: conn: %w", err)
 	}
-	return &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db}, nil
+	return &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db, sessionVFS: d.wrapper}, nil
 }
 
 // ReadDSN returns the SQLite DSN for the host's own SQLite connection to
@@ -138,6 +160,13 @@ const hasLTXProbeTimeout = 5 * time.Second
 // database. Call only while holding the database lease (invariant 5);
 // DisableWrite must follow in the same request (spec §8).
 func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, error) {
+	return d.OpenWriteWithManifest(ctx, dbName, nil)
+}
+
+// OpenWriteWithManifest opens a read-write session whose restore plan comes
+// from the durable manifest. A nil files slice selects the legacy listing
+// path. Call only while holding the database lease (invariant 5).
+func (d *Database) OpenWriteWithManifest(ctx context.Context, dbName string, files []*ltx.FileInfo) (*Session, error) {
 	// One write VFS per database profile; each transaction gets its own
 	// connection and VFSFile on that shared registration.
 	w, err := d.ensureWriteVFS()
@@ -148,27 +177,46 @@ func (d *Database) OpenWrite(ctx context.Context, dbName string) (*Session, erro
 		return nil, err
 	}
 
-	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), globalSessionSeq.Add(1))
+	seq := globalSessionSeq.Add(1)
+	fileName := fmt.Sprintf("walrusd_%s_%d.db", sanitize(dbName), seq)
+	var state *vfsSession
+	if files != nil {
+		mc := newManifestClient(d.client, files)
+		state = &vfsSession{inner: d.Bridge.newInnerVFS(mc, true), client: mc}
+		if root, err := w.ensureBufferRoot(); err == nil {
+			// Keep this session's Litestream write buffer inside the wrapper's
+			// removable directory instead of letting Litestream create its
+			// own litestream-vfs-* temp dir per session.
+			state.inner.WriteBufferPath = filepath.Join(root, fmt.Sprintf("write-buffer-%d", seq))
+		}
+		w.registerSession(fileName, state)
+	}
 	dsn := fmt.Sprintf("file:%s?vfs=%s&mode=rw", fileName, d.writeVFSName)
-	vfsRegistryMu.Lock()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
-		vfsRegistryMu.Unlock()
+		if state != nil {
+			w.unregisterSession(fileName)
+		}
 		_ = w.discardBuffers()
 		return nil, fmt.Errorf("litestream: open write: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
-	vfsRegistryMu.Unlock()
 	if err != nil {
 		db.Close()
+		if state != nil {
+			w.unregisterSession(fileName)
+		}
 		_ = w.discardBuffers()
 		return nil, fmt.Errorf("litestream: conn: %w", err)
 	}
-	s := &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db, writeVFS: w}
+	s := &Session{dbVFS: d, dbFileName: fileName, conn: conn, db: db, writeVFS: w, sessionVFS: w}
 	if err := s.EnableWrite(); err != nil {
 		conn.Close()
 		db.Close()
+		if state != nil {
+			w.unregisterSession(fileName)
+		}
 		_ = w.discardBuffers()
 		return nil, err
 	}
@@ -248,8 +296,6 @@ func (s *Session) Run(ctx context.Context, fn func(*sql.Conn) error) error {
 	if closed || conn == nil {
 		return errors.New("litestream: session is closed")
 	}
-	vfsRegistryMu.Lock()
-	defer vfsRegistryMu.Unlock()
 	return fn(conn)
 }
 
@@ -293,19 +339,15 @@ func (s *Session) Close() error {
 		errs = append(errs, errors.New("litestream: session closed with write mode still enabled (flush barrier skipped)"))
 	}
 	if s.conn != nil {
-		vfsRegistryMu.Lock()
 		if err := s.conn.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		vfsRegistryMu.Unlock()
 		s.conn = nil
 	}
 	if s.db != nil {
-		vfsRegistryMu.Lock()
 		if err := s.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		vfsRegistryMu.Unlock()
 		s.db = nil
 	}
 	if s.writeVFS != nil {
@@ -320,7 +362,24 @@ func (s *Session) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	if s.sessionVFS != nil {
+		s.sessionVFS.unregisterSession(s.dbFileName)
+		s.sessionVFS = nil
+	}
 	return errors.Join(errs...)
+}
+
+// ManifestFiles returns the file list captured by this session's manifest
+// client, including the file just flushed. It returns nil for legacy opens.
+func (s *Session) ManifestFiles() []*ltx.FileInfo {
+	if s.sessionVFS == nil {
+		return nil
+	}
+	sess := s.sessionVFS.session(s.dbFileName)
+	if sess == nil || sess.client == nil {
+		return nil
+	}
+	return sess.client.Files()
 }
 
 // WriteOn reports whether write mode is currently enabled.

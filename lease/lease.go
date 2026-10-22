@@ -120,6 +120,16 @@ func (h *Held) Epoch() uint64 { return h.Record.Epoch }
 // Acquire acquires the lease for db before any SQLite write begins
 // (spec §7.2). It is single-flight per database ID inside this process and
 // bounded by cfg.AcquireRetryBudget; on timeout it returns ClassBusy.
+// AcquireKey acquires a lease stored under an explicit key. It is used for
+// auxiliary locks (for example a database's compaction lock) that must not
+// collide with the write lease.
+func (m *Manager) AcquireKey(ctx context.Context, db identity.DatabaseID, key string) (*Held, error) {
+	if key == "" {
+		return nil, errors.New("lease: key is required")
+	}
+	return m.acquireSingleFlight(ctx, db, key)
+}
+
 func (m *Manager) Acquire(ctx context.Context, db identity.DatabaseID, rootPrefix ...string) (*Held, error) {
 	key := ""
 	if m.keys != nil {

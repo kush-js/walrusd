@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,17 +71,30 @@ func DefaultConfig() Config {
 
 // Runtime is the walrusd runtime surface (spec §11).
 type Runtime struct {
-	cfg     Config
-	bridge  *litestream.Bridge
-	leases  *lease.Manager
-	reads   *cache.Cache
-	metrics *observability.Registry
+	cfg              Config
+	bridge           *litestream.Bridge
+	leases           *lease.Manager
+	compactionLeases *lease.Manager
+	reads            *cache.Cache
+	metrics          *observability.Registry
+
+	compactCh     chan compactionJob
+	compactCancel context.CancelFunc
+	compactWG     sync.WaitGroup
+	compactPasses atomic.Int64
 
 	mu      sync.Mutex
 	dbs     map[string]*list.Element // database key -> registered VFS
 	dbOrder *list.List               // front = most recently used
 	dbLimit int
 	closed  bool
+}
+
+// compactionJob carries only the trusted descriptor and identity. No page or
+// row data is queued; the worker reads the durable manifest from storage.
+type compactionJob struct {
+	descriptor DatabaseDescriptor
+	id         identity.DatabaseID
 }
 
 type databaseEntry struct {
@@ -147,17 +161,29 @@ func New(store lease.Store, owner string, cfg Config) (*Runtime, error) {
 	if dbLimit <= 0 {
 		dbLimit = 64
 	}
+	compactionCfg := cfg.Lease
+	if min := cfg.Compaction.Timeout + cfg.Lease.ClockSkewAllowance + 2*time.Second; compactionCfg.Duration < min {
+		compactionCfg.Duration = min
+	}
 	rt := &Runtime{
-		cfg:     cfg,
-		bridge:  litestream.NewBridge(lsCfg),
-		leases:  lease.NewManager(store, owner, cfg.Lease, nil),
-		reads:   cache.New(cfg.MaxReadInstances, cfg.ReadInstanceIdleTTL),
-		metrics: observability.NewRegistry(),
-		dbs:     make(map[string]*list.Element),
-		dbOrder: list.New(),
-		dbLimit: dbLimit,
+		cfg:              cfg,
+		bridge:           litestream.NewBridge(lsCfg),
+		leases:           lease.NewManager(store, owner, cfg.Lease, nil),
+		compactionLeases: lease.NewManager(store, owner, compactionCfg, nil),
+		reads:            cache.New(cfg.MaxReadInstances, cfg.ReadInstanceIdleTTL),
+		metrics:          observability.NewRegistry(),
+		dbs:              make(map[string]*list.Element),
+		dbOrder:          list.New(),
+		dbLimit:          dbLimit,
 	}
 	rt.reads.SetObserver(rt.readInstanceAdded, rt.readInstanceRemoved)
+	if cfg.Compaction.Enabled {
+		ctx, cancel := context.WithCancel(context.Background())
+		rt.compactCancel = cancel
+		rt.compactCh = make(chan compactionJob, 256)
+		rt.compactWG.Add(1)
+		go rt.compactionLoop(ctx)
+	}
 	return rt, nil
 }
 
@@ -288,6 +314,9 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.compactCancel != nil {
+		r.compactCancel()
+	}
 	var dbs []*databaseEntry
 	for el := r.dbOrder.Front(); el != nil; el = el.Next() {
 		entry := el.Value.(*databaseEntry)
@@ -311,6 +340,7 @@ func (r *Runtime) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	r.compactWG.Wait()
 	return errors.Join(errs...)
 }
 
@@ -375,18 +405,30 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 			}
 		}
 	}
-	// Empty-DB fast path: a read-mode VFS open on a zero-LTX replica
-	// blocks forever in Litestream's waitForRestorePlan (uncancellable
-	// CGO). Probe first; with no flushed state the database is empty by
-	// definition, so serve fn an empty query-only connection instead.
-	has, err := vfs.HasLTX(ctx)
+	// The durable manifest makes an open one GET instead of one LIST per
+	// level. Legacy replicas (no manifest) still probe and list.
+	files, hasManifest, err := vfs.ReadManifest(ctx)
 	if err != nil {
-		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "probe replica", err)
+		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "read manifest", err)
 	}
-	if !has {
+	if hasManifest && len(files) == 0 {
 		return withEmptyRead(ctx, fn)
 	}
-	session, err := vfs.OpenRead(ctx, db.ID)
+	if !hasManifest {
+		has, err := vfs.HasLTX(ctx)
+		if err != nil {
+			return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "probe replica", err)
+		}
+		if !has {
+			return withEmptyRead(ctx, fn)
+		}
+	}
+	var session *litestream.Session
+	if hasManifest {
+		session, err = vfs.OpenReadWithManifest(ctx, db.ID, files)
+	} else {
+		session, err = vfs.OpenRead(ctx, db.ID)
+	}
 	if err != nil {
 		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open read session", err)
 	}
@@ -558,7 +600,35 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 	})
 	// From here, the lease must be resolved: released on success, or left
 	// to expire on failure paths that cannot safely release (spec §8).
-	session, err := vfs.OpenWrite(ctx, db.ID)
+	manifestFiles, hasManifest, err := vfs.ReadManifest(ctx)
+	if err != nil {
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "read manifest", err))
+	}
+	if hasManifest {
+		// A failed manifest PUT leaves a level-0 LTX file that the manifest
+		// does not index. Repair before opening, or a new idempotency key
+		// would build its plan without that committed file.
+		tail, terr := vfs.TailTXID(ctx)
+		if terr != nil {
+			return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "probe replica tail", terr))
+		}
+		if uint64(tail) > litestream.ManifestMaxTXID(manifestFiles) {
+			rebuilt, berr := vfs.BuildManifest(ctx)
+			if berr != nil {
+				return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "rebuild manifest", berr))
+			}
+			if werr := vfs.WriteManifest(ctx, rebuilt); werr != nil {
+				return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "write repaired manifest", werr))
+			}
+			manifestFiles = rebuilt
+		}
+	}
+	var session *litestream.Session
+	if hasManifest {
+		session, err = vfs.OpenWriteWithManifest(ctx, db.ID, manifestFiles)
+	} else {
+		session, err = vfs.OpenWrite(ctx, db.ID)
+	}
 	if err != nil {
 		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open write session", err))
 	}
@@ -591,6 +661,25 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 		rollback()
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.IdempotencyDedupeHits++ })
 		session.Close()
+		// The transaction committed on an earlier attempt but the manifest
+		// update may not have. Repair it before acknowledging the retry.
+		if hasManifest {
+			if tx, perr := strconv.ParseUint(existingTXID, 16, 64); perr == nil {
+				current, ok, rerr := vfs.ReadManifest(ctx)
+				if rerr != nil {
+					return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "read manifest", rerr))
+				}
+				if !ok || !litestream.ManifestCovers(current, tx) {
+					files, berr := vfs.BuildManifest(ctx)
+					if berr != nil {
+						return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "repair manifest", berr))
+					}
+					if werr := vfs.WriteManifest(ctx, files); werr != nil {
+						return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "write repaired manifest", werr))
+					}
+				}
+			}
+		}
 		if err := r.leases.Release(ctx, held); err != nil {
 			return zero, err
 		}
@@ -671,31 +760,27 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 			fmt.Sprintf("flushed txid %s does not match recorded txid %s", txid, nextTXID))
 	}
 	result.TXID = txid
+	// 4b. Persist the durable file index before acknowledging. With a
+	// manifest present this is the commit record for the new LTX file; a
+	// failure is not acknowledged. A legacy replica gets a one-time manifest
+	// (built from a listing) so subsequent opens avoid level listings.
+	if hasManifest {
+		files := session.ManifestFiles()
+		if files == nil {
+			files = manifestFiles
+		}
+		if err := vfs.WriteManifest(ctx, files); err != nil {
+			session.Close()
+			return zero, r.flushFailure(ctx, held, walrusderr.Wrap(walrusderr.ClassFlushFailed, "manifest update not confirmed", err))
+		}
+	} else if files, berr := vfs.BuildManifest(ctx); berr == nil {
+		if werr := vfs.WriteManifest(ctx, files); werr != nil {
+			r.metrics.Record(dbKey, func(m *observability.Metrics) { m.CompactionFailures++ })
+		}
+	}
 	// A cached read session may still hold the pre-write index. Drop it so
 	// the next read opens at the flushed remote state.
 	r.reads.Evict(vfs.Key)
-	// 4b. Keep the replica chain bounded. This runs under the lease, after
-	// the flush: the next writer appends to the chain compaction just left.
-	// It is best-effort — the write is already durable, so a compaction
-	// failure must not turn it into an error.
-	if r.cfg.Compaction.Enabled && r.cfg.Compaction.Interval > 0 &&
-		entry.writes.Add(1)%int64(r.cfg.Compaction.Interval) == 0 {
-		timeout := r.cfg.Compaction.Timeout
-		if timeout <= 0 {
-			timeout = 30 * time.Second
-		}
-		cctx, cancel := context.WithTimeout(context.Background(), timeout)
-		levels, cerr := vfs.Compact(cctx, r.cfg.Compaction.Threshold, r.cfg.Compaction.Retention)
-		cancel()
-		r.metrics.Record(dbKey, func(m *observability.Metrics) {
-			if cerr != nil {
-				m.CompactionFailures++
-				return
-			}
-			m.Compactions++
-			m.CompactedLevels += uint64(levels)
-		})
-	}
 	// 5. Conditionally release the lease.
 	if err := r.leases.Release(ctx, held); err != nil {
 		if walrusderr.ClassOf(err) == walrusderr.ClassLeaseConflict {
@@ -706,7 +791,113 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 	}
 	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleased++ })
 	session.Close()
+	// Compaction runs outside the request and outside the write lease. A
+	// dropped enqueue is harmless: the next write re-enqueues.
+	if r.cfg.Compaction.Enabled && r.cfg.Compaction.Interval > 0 &&
+		entry.writes.Add(1)%int64(r.cfg.Compaction.Interval) == 0 {
+		r.enqueueCompaction(d, db)
+	}
 	return result, nil
+}
+
+// enqueueCompaction schedules one best-effort pass. The queue is bounded and
+// lossy: the next write re-enqueues, so a full queue never blocks a request.
+func (r *Runtime) enqueueCompaction(d DatabaseDescriptor, db identity.DatabaseID) {
+	if r.compactCh == nil {
+		return
+	}
+	select {
+	case r.compactCh <- compactionJob{descriptor: d, id: db}:
+	default:
+	}
+}
+
+func (r *Runtime) compactionLoop(ctx context.Context) {
+	defer r.compactWG.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-r.compactCh:
+			if !ok {
+				return
+			}
+			r.runCompaction(ctx, job)
+		}
+	}
+}
+
+// runCompaction merges the manifest's files and updates the manifest under
+// the write lease. Sources are left in place until they age past retention,
+// so a read that started on the previous manifest can still finish; a later
+// pass garbage-collects anything superseded.
+func (r *Runtime) runCompaction(parent context.Context, job compactionJob) {
+	timeout := r.cfg.Compaction.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	entry, err := r.database(job.descriptor, job.id)
+	if err != nil {
+		return
+	}
+	defer r.releaseDatabase(entry)
+	dbKey := job.id.String()
+
+	files, ok, err := entry.vfs.ReadManifest(ctx)
+	if err != nil || !ok || len(files) == 0 {
+		return
+	}
+	key := job.id.LeaseKey(job.descriptor.Storage.RootPrefix) + ":compact"
+	held, err := r.compactionLeases.AcquireKey(ctx, job.id, key)
+	if err != nil {
+		return
+	}
+	defer r.compactionLeases.Release(context.Background(), held)
+
+	_, merged, sources, err := entry.vfs.CompactManifest(ctx, files, r.cfg.Compaction.Threshold, r.cfg.Compaction.Retention)
+	if err != nil {
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.CompactionFailures++ })
+		return
+	}
+	if len(merged) == 0 {
+		return
+	}
+
+	// Re-read the manifest under the write lease so concurrent writes are not
+	// dropped, then apply only this pass's merge delta.
+	writeHeld, err := r.leases.Acquire(ctx, job.id, job.descriptor.Storage.RootPrefix)
+	if err != nil {
+		return
+	}
+	base, baseOK, readErr := entry.vfs.ReadManifest(ctx)
+	if readErr != nil {
+		_ = r.leases.Release(context.Background(), writeHeld)
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.CompactionFailures++ })
+		return
+	}
+	if !baseOK {
+		base = files
+	}
+	final := litestream.ApplyManifestDelta(base, merged, sources)
+	writeErr := entry.vfs.WriteManifest(ctx, final)
+	_ = r.leases.Release(context.Background(), writeHeld)
+	if writeErr != nil {
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.CompactionFailures++ })
+		return
+	}
+
+	// The manifest no longer references the sources; delete the old ones.
+	_ = entry.vfs.DeleteFiles(ctx, sources, r.cfg.Compaction.Retention)
+	r.metrics.Record(dbKey, func(m *observability.Metrics) {
+		m.Compactions++
+		m.CompactedLevels += uint64(len(merged))
+	})
+	if r.compactPasses.Add(1)%16 == 0 {
+		_ = entry.vfs.GC(ctx, r.cfg.Compaction.Retention)
+	}
 }
 
 // leaseStale reports whether the held lease already ran past its expiry

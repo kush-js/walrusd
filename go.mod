@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/mattn/go-sqlite3 v1.14.19
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/superfly/ltx v0.5.2
 )
 
 require (
@@ -34,7 +35,6 @@ require (
 	github.com/prometheus/common v0.45.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/superfly/ltx v0.5.2 // indirect
 	github.com/tetratelabs/wazero v1.2.1 // indirect
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
@@ -66,3 +66,5 @@ require (
 	github.com/benbjohnson/litestream v0.5.16
 	github.com/psanford/sqlite3vfs v0.0.0-20260519004904-f9180fa2acc9
 )
+
+replace github.com/psanford/sqlite3vfs => ./third_party/sqlite3vfs

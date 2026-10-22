@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.17
+
+- **VFS registry concurrency**: vendored `psanford/sqlite3vfs` with a `sync.Map` dispatch table. The process-global registry mutex is no longer held across VFS opens or SQL execution, so requests for different databases run concurrently again.
+- **Durable manifest**: every database gets a `replica/manifest.json` written after each flush. Opening a database is one manifest GET instead of `HasLTX` plus ten level LISTs (and one per level for the restore plan). Legacy replicas fall back to listing and are migrated on the next write; a level-0 tail check repairs an unindexed file after a failed manifest PUT.
+- **Async compaction**: merges run in a background worker under a separate compaction lease, outside the write lease. The manifest is updated under the write lease before source files are deleted; an opportunistic GC removes superseded objects after retention.
+- **No page cache by default**: `VFSPageCacheBytes` now defaults to 0. Callers that want an in-process page cache opt in explicitly.
+- **Auxiliary leases**: `lease.Manager.AcquireKey` for compaction locks that must not collide with the write lease.
+- Manifest and async-compaction tests, including legacy fallback, read-after-write, compaction update, and a manifest client that never lists.
+
 ## 0.5.16
 
 - `HasLTX` now probes every compaction level, not just the live tail (0) and snapshot (9). Compaction writes deltas to levels 1..8, so a compacted database could have both 0 and 9 empty while holding data; reads then treated it as an empty database and failed with "no such table".
