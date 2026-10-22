@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 - **Compaction survives VFS eviction.** The trigger is now the durable manifest written after each successful mutation, not an in-memory write counter tied to the resident database entry. A sparse tenant evicted between writes can no longer grow an unbounded L0 chain. The compaction pass also checks every compactable level instead of stopping at the first level below threshold, so a busy higher level still merges.
 - **Compaction runs in a bounded worker pool.** `Compaction.Workers` / `compaction_workers` defaults to 4. A per-database pending marker keeps at most one queued or running pass, so an over-threshold chain cannot flood the queue. `compaction_interval` is retained for configuration compatibility but no longer controls the trigger.
