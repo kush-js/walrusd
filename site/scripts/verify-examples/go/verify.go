@@ -19,7 +19,7 @@ func exampleDescriptor() runtime.DatabaseDescriptor {
 	d := runtime.DatabaseDescriptor{
 		DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
 		Storage: litestream.Profile{
-			Provider:   "s3", // "s3" (any S3-compatible) or "file"
+			Provider:   "s3",         // "s3" (any S3-compatible), "file" (local), or "memory" (tests)
 			Endpoint:   "https://<account>.r2.cloudflarestorage.com",
 			Bucket:     "my-org-bucket",
 			RootPrefix: "tenants/acme",

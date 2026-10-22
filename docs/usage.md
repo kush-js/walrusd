@@ -49,6 +49,14 @@ separate lease, separate replica chain. Bucket names, prefixes, and
 credentials are issued by the control plane — **never accept them from end
 users** (spec §11).
 
+Writes produce one LTX file per transaction. A background worker compacts the
+chain into higher levels (L0 through L8) and deletes source files that higher
+levels fully cover, so the object count grows with the logarithm of write
+volume, not with the transaction count. Each database gets a durable
+`replica/manifest.json` written after every flush, so opening one is a single
+manifest GET instead of a probe plus ten level listings; no bucket lifecycle
+policy is required or consulted.
+
 ---
 
 ## Go core
@@ -287,9 +295,21 @@ body = rows[0]["body"]
 
 You get a real `*sql.Conn` speaking SQLite through the Litestream VFS. No
 lease is acquired; the connection observes only flushed remote state
-(spec §9). Reads are served lazily page-by-page from object storage through
-the per-database `VFSPageCacheBytes` page cache. The whole database is never
-downloaded, and Litestream hydration is disabled.
+(spec §9). Reads are served lazily page-by-page from object storage. The
+whole database is never downloaded, and Litestream hydration is disabled.
+`VFSPageCacheBytes` defaults to `0`: the read path holds no page cache, so
+every read fetches the pages SQLite requests. Set it to opt into a
+per-database cache.
+
+Row values in the JSON envelopes follow one encoding: BLOB values arrive as
+base64 strings (and bind as raw bytes via `{"$blob": "<base64>"}` or a
+`Uint8Array`/`Buffer` parameter in TypeScript); duplicate column names get a
+`_2`, `_3`, ... suffix instead of silently collapsing. JSON cannot carry
+integers above 2^53-1 exactly, so pass large integer parameters as decimal
+strings — SQLite's INTEGER column affinity converts them losslessly — and
+read them back as strings or TEXT. One read's marshaled rows are capped by
+`MaxReadResultBytes` (default 64 MiB) and fail with `DB_INVALID_ARGUMENT`
+beyond it.
 
 Resident database VFS entries are bounded by `MaxReadInstances` using LRU
 eviction. Read sessions are separately cached up to the same limit and are
@@ -301,8 +321,9 @@ non-positive `MaxReadInstances` makes the resident-database LRU fall back to
 Eviction is safe: durable state remains in object storage, and the next
 access re-opens the database and re-fetches pages on demand. The approximate
 read-path memory ceiling is `MaxReadInstances * VFSPageCacheBytes`, plus the
-resident VFS and replica-client overhead per database. At the defaults, 200
-fully warm 10 MiB caches can use about 2 GiB.
+resident VFS and replica-client overhead per database. `VFSPageCacheBytes`
+defaults to `0`, so the page-cache term is `0` until a cache is opted into;
+with 200 resident databases at a 10 MiB cache the term reaches about 2 GiB.
 
 ### Write
 
@@ -399,6 +420,19 @@ Rules the runtime enforces:
   original TXID, never a placeholder.
 - The callback runs in one transaction. Keep it short: the lease, the VFS
   write buffer, and the flush window all span the callback.
+- The callback **must not call back into the runtime** (`WithRead`,
+  `WithWrite`, `ReadDSN`, or register new databases): the callback runs
+  inside the write session, and a nested call would contend with the
+  state the outer transaction is mutating. Do the nested work in the same
+  transaction, or before/after `WithWrite`. Callback re-entry needs no
+  process-global lock: the VFS registry dispatches through a `sync.Map`
+  (vendored `sqlite3vfs`), so opens and SQL execution never serialize
+  behind registration.
+- A callback that outlives its attempt deadline is rolled back and fails
+  with `DB_BUSY` — a deadline-expired attempt never commits. Deterministic
+  SQLite failures (constraint violations, read-only databases) surface once
+  as `DB_INVALID_ARGUMENT` / `DB_CONFIGURATION_INVALID` and are never
+  retried.
 - On return, the flush is confirmed and the lease released. `res.TXID` is
   the remote transaction ID — hand it to subsequent reads if you need
   explicit read-after-write reasoning (spec §9).
@@ -659,8 +693,8 @@ defaulted from spec §16):
     "compaction_threshold": 8,
     "compaction_retention_ms": 600000,
     "compaction_timeout_ms": 30000,
-    "write_sync_interval_ms": 1000,
     "max_temp_write_buffer": 268435456,
+    "max_read_result_bytes": 67108864,
     "redis_address": "127.0.0.1:6379"
   }
 }
@@ -686,17 +720,23 @@ controls the separate cache of compaction-level listings (metadata only, a few
 hundred bytes per database): keep it on with `replica_cache_bytes: 0` to skip
 nine of the ten level LISTs per open without holding file bytes.
 
-Compaction keeps the chain bounded: every `compaction_interval` writes, under
-the write lease, each level holding more than `compaction_threshold` files is
-merged into the next level (L0 through L8; level 9 is Litestream's snapshot
-level and is never written by a merge). Merged sources are deleted only after
+Compaction keeps the chain bounded: a background worker merges a level's files
+once it holds more than `compaction_threshold` files, cascading upward (L0
+through L8; L9 is Litestream's snapshot level and is never written by a merge).
+Every `compaction_interval` writes triggers a check, and the pass runs under a
+separate compaction lease outside the write lease, so a slow merge never
+extends a write. The manifest is updated under the write lease before merged
+sources are deleted, and those sources are removed only after
 `compaction_retention_ms`, so a read that planned on them can finish. A
-compaction pass is bounded by `compaction_timeout_ms`; a failure is recorded
-in metrics and never fails the write that triggered it. `write_sync_interval_ms` is the background VFS sync interval
-forwarded to Litestream configuration; the synchronous flush before lease
-release remains the durability barrier. `max_temp_write_buffer` caps
-per-process temporary write-buffer bytes, and a value at or below 0 disables
-the cap.
+compaction pass is bounded by `compaction_timeout_ms`; a failure is recorded in
+metrics and never fails the write that triggered it.
+
+`max_temp_write_buffer` caps per-process temporary write-buffer bytes, and a
+value at or below 0 disables the cap. `max_read_result_bytes` caps the JSON
+size of one read's rows (a runaway query fails cleanly instead of exhausting
+process memory); a value at or below 0 disables the cap. Writes always flush
+synchronously before the lease is released — there is no background sync
+interval to configure.
 
 `write` request:
 
@@ -731,6 +771,13 @@ The suite asserts exactly the operations the lease protocol depends on:
 read-after-write, create-if-absent exclusivity, token-gated replace with
 token rotation, and exactly-one-winner under concurrent create/replace.
 
+While a lease is held, the holder heartbeats it (a token-rotating replace
+every third of the lease duration, up to three lease durations total): a
+slow-but-correct transaction or flush cannot lose its fence to a successor
+just by being slow. Takeover after expiry still works for crashed holders —
+a live holder that stops heartbeating (process wedged beyond the hold
+window, or `Manager.Abandon`) expires and is takeable exactly like a crash.
+
 Object-storage providers need no CAS suite: reads must observe completed
 PUTs and listings must expose the expected LTX state (`file` is the local
 reference implementation).
@@ -753,21 +800,22 @@ Go `runtime.Config` (defaults from spec §16):
 | `RetryPolicy.MaxTotal` | 64s | Whole outer retry wall-clock budget; `0` disables retries |
 | `ReadInstanceIdleTTL` | 60s | Close an idle read session; `<=0` disables the read-session cache |
 | `MaxReadInstances` | 200 | Resident-database LRU and read-session cache bound; `<=0` falls back to 64 resident databases and disables the read-session cache |
-| `Litestream.VFSPageCacheBytes` | 10 MiB | Per-database SQLite page cache |
-| `Litestream.WriteSyncInterval` | 1s | Background VFS sync interval; the synchronous flush before lease release remains authoritative |
+| `Litestream.VFSPageCacheBytes` | `0` | Per-database SQLite page cache; `0` disables it (opt in explicitly) |
 | `MaxTempWriteBuffer` | 256 MiB | Per-process write-buffer cap; `<=0` disables the cap |
+| `MaxReadResultBytes` | 64 MiB | One read's marshaled-row cap; `<=0` disables the cap |
 | `RequireFlushBeforeRelease` | `true` | **Must stay true**; runtime rejects `false` |
 
 Reads fetch only the pages SQLite requests and cache them up to
 `VFSPageCacheBytes` per resident database. Litestream's hydrator, which
 would materialize a local database file, is compiled in but disabled:
 `HydrationEnabled` must stay `false` in normal operation (invariant 11).
-The approximate read-path memory ceiling is
+`VFSPageCacheBytes` defaults to `0`, so the page-cache term is `0` unless a
+cache is opted into; the approximate read-path memory ceiling is
 `MaxReadInstances * VFSPageCacheBytes`, plus resident VFS and replica-client
-overhead per database. At the defaults, 200 fully warm 10 MiB caches can use
-about 2 GiB. LRU eviction drops the database's VFS, page cache, and replica
-client; data remains durable in object storage and the next access re-opens
-and re-fetches pages on demand.
+overhead per database. With 200 resident databases at a 10 MiB cache that
+term reaches about 2 GiB. LRU eviction drops the database's VFS, page cache,
+and replica client; data remains durable in object storage and the next
+access re-opens and re-fetches pages on demand.
 
 ## Operational checklist (spec §17–18)
 

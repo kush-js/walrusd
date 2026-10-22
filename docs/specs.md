@@ -57,7 +57,7 @@ This runtime supplies the application-level single-writer coordination that Lite
 - A lost/expired lease cannot cryptographically stop a faulty process that ignores the protocol and continues uploading LTX data.
 - Any future requirement for hard, storage-enforced stale-writer fencing requires a fork/wrapper of Litestream's replica write path or a different storage format.
 
-Litestream already maintains the authoritative logical database state as an ordered LTX chain and transaction ID. Do not add an independent “current database manifest,” duplicate database snapshots per transaction, or an application-defined commit sequence for v1.
+Litestream already maintains the authoritative logical database state as an ordered LTX chain and transaction ID. Do not add a second, independent source of truth — a duplicate database snapshot per transaction, or an application-defined commit sequence for v1. The one derived index walrusd adds is `replica/manifest.json`, a cache of the replica's own file listing (the same metadata a level LIST returns), written after each confirmed flush and rebuilt from the listing when absent or stale. It never holds SQL page or row data and is never authoritative: a missing, unreadable, or behind manifest falls back to listing and is repaired on the next write.
 
 ## 4. Tenant identity and object layout
 
@@ -81,7 +81,9 @@ Bucket layout:
 ```text
 <root_prefix>/<database_id>/
   lease.json
-  replica/                 # Litestream LTX files and its own metadata
+  replica/                 # Litestream LTX files, its own metadata, and
+                           # manifest.json (walrusd's derived file-listing
+                           # index; rebuilt from a listing if absent/stale)
   metadata/schema.json
 ```
 
@@ -99,6 +101,10 @@ path — no conditional-write support required. Leases live in Redis/Valkey
 (spec §7), so cheap providers without conditional writes (Wasabi,
 Backblaze B2, Sliplane) are acceptable as long as reads observe completed
 PUTs (read-after-write) and listings expose the expected LTX state.
+
+The runtime compacts the LTX chain into higher levels (L0 through L8; L9 is Litestream's snapshot level and is never written by a merge) and deletes source files whose whole TXID range a higher level covers. A merge runs in a background worker under a **separate compaction lease** (`lease.Manager.AcquireKey`), outside the write lease, so a slow compaction never extends a write. The durable manifest is updated **under the write lease** before any source file is deleted, so no reader ever plans against a file that is already gone; superseded objects are removed by an opportunistic GC after the retention window. Bucket lifecycle policies are never consulted, so the chain stays bounded on any plain object store.
+
+Opening a database reads `replica/manifest.json` instead of probing `HasLTX` and listing ten levels (plus one LIST per level for the restore plan). Legacy replicas without a manifest fall back to listing and are migrated on the next write; a level-0 tail check repairs a level-0 file left unindexed by a failed manifest PUT.
 
 ## 6. Runtime architecture
 
@@ -150,7 +156,7 @@ Fields:
 - `lease_id`: random UUID generated for each successful acquisition.
 - `epoch`: incremented for every successful acquisition; records ownership generations and makes stale activity visible.
 - `state`: `held` or `released`.
-- `expires_at`: upper bound on the lease's intended lifetime; used only for crash recovery/takeover.
+- `expires_at`: upper bound on the lease's intended lifetime, extended by heartbeat renewal while the holder is alive; used for crash recovery/takeover.
 
 The store's fencing token (minted fresh on every successful write) is the
 CAS token. It is not interchangeable with `epoch`. All store mutations are
@@ -172,6 +178,10 @@ Each logical mutation acquires the lease before any SQLite write begins:
 
 Lease acquisition must be single-flight inside an API process for the same database ID to avoid local thundering herds. The Redis/Valkey CAS remains the authority across processes.
 
+Auxiliary leases that must not collide with the write lease use `lease.Manager.AcquireKey` on a derived key (for example a compaction lock). They follow the same CAS protocol and namespace as the write lease, so a compaction lock and a write lock for the same database never contend on one key.
+
+`Manager.Abandon` ends renewal without touching the store: the lease is left to expire on its own. Use it on paths that must not mutate the store (an unconfirmed flush, a process shutting down) rather than issuing a release that could race a successor.
+
 ### 7.3 Release and crash recovery
 
 After a successful remote flush, conditionally replace the lease record with `state=released` using the fencing token held by the lease owner. The release keeps the record and its epoch history rather than deleting it.
@@ -192,7 +202,7 @@ lease:
   retry_backoff: 25ms..500ms
 ```
 
-The lease duration must exceed the configured request timeout plus expected remote-flush time plus skew allowance. A request must abort and leave the lease to expire if it cannot complete safely within the duration. v1 does not renew a lease during a normal short mutation; long-running writes must either renew with conditional CAS or be rejected/split into short transactions.
+The lease duration must exceed the configured request timeout plus expected remote-flush time plus skew allowance. The holder heartbeats the lease while it is held: every third of the duration it extends `expires_at` with a conditional CAS (rotating the fencing token), capped at three lease durations of total hold. A slow-but-correct mutation or flush therefore cannot lose its fence to a successor; a wedged holder stops heartbeating at the cap and is taken over exactly like a crash. A request must abort and leave the lease to expire if it cannot complete safely at all.
 
 ## 8. Write lifecycle
 
@@ -250,7 +260,8 @@ Reads must never depend on an API-instance local cache for correctness. A cache 
 
 API processes are stateless in the deployment sense. They may hold bounded, disposable local state:
 
-- VFS page cache in RAM;
+- VFS page cache in RAM (opt-in; `vfs_page_cache_bytes` defaults to `0`);
+- bounded caches of immutable replica LTX files and compaction-level listings (`replica_cache_bytes`, `level_listing_cache_ttl_ms`);
 - read-only VFS instances for recently used databases;
 - short-lived temporary write buffers during a held lease;
 - per-database single-flight/open locks;
@@ -262,12 +273,14 @@ Recommended starting controls:
 runtime:
   read_instance_idle_ttl: 60s
   max_read_instances: 200
-  vfs_page_cache_bytes: 10485760
+  vfs_page_cache_bytes: 0
   replica_cache_bytes: 33554432
   level_listing_cache_ttl_ms: 30000
   compaction_enabled: true
   compaction_interval: 8
   compaction_threshold: 8
+  compaction_retention_ms: 600000
+  compaction_timeout_ms: 30000
   max_total_cache_bytes: 2147483648
   max_temp_write_buffer_bytes: 268435456
   hydration_enabled: false
@@ -464,14 +477,16 @@ lease:
   retry_backoff_max: 500ms
 
 litestream:
-  write_sync_interval: 1s        # normal mode; disable triggers forced flush
+  # no sync interval knob: every write flushes synchronously before the
+  # lease is released — that flush is the durability barrier
   hydration_enabled: false
-  vfs_page_cache_bytes: 10485760
+  vfs_page_cache_bytes: 0
 
 runtime:
   request_timeout: 20s
   read_instance_idle_ttl: 60s
   max_temp_write_buffer_bytes: 268435456
+  max_read_result_bytes: 67108864
 
 durability:
   require_flush_before_release: true

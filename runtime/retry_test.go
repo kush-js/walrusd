@@ -46,6 +46,45 @@ func holdLease(t *testing.T, store lease.Store, d runtime.DatabaseDescriptor) (*
 	return lm, held
 }
 
+// A deterministic SQLite failure (constraint violation) must surface once,
+// classified as a caller error: retrying re-runs a transaction that would
+// fail identically every time.
+func TestConstraintViolationIsNotRetried(t *testing.T) {
+	store := lease.NewMemoryStore()
+	d := descriptor(t, "users/retry-constraint")
+	rt := retryTestRuntime(t, store, "api-1", runtime.DefaultRetryPolicy())
+	ctx := context.Background()
+
+	if _, err := rt.WithWrite(ctx, d, "schema", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `CREATE TABLE t (k INTEGER PRIMARY KEY)`)
+		return err
+	}); err != nil {
+		t.Fatalf("schema write: %v", err)
+	}
+	if _, err := rt.WithWrite(ctx, d, "first", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `INSERT INTO t (k) VALUES (1)`)
+		return err
+	}); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	invocations := 0
+	_, err := rt.WithWrite(ctx, d, "dup", func(conn *sql.Conn) error {
+		invocations++
+		_, execErr := conn.ExecContext(ctx, `INSERT INTO t (k) VALUES (1)`)
+		return execErr
+	})
+	if err == nil {
+		t.Fatal("expected duplicate insert to fail")
+	}
+	if got := walrusderr.ClassOf(err); got != walrusderr.ClassInvalidArgument {
+		t.Fatalf("class = %s, want DB_INVALID_ARGUMENT", got)
+	}
+	if invocations != 1 {
+		t.Fatalf("callback ran %d times, want 1 (constraint errors are terminal)", invocations)
+	}
+}
+
 // The production defaults are ten 1s retries, then doubling 2s, 4s, 8s,
 // 16s, 32s, 64s delays, with a 64s total wall-clock budget.
 func TestWithWriteRetriesUntilLeaseReleased(t *testing.T) {

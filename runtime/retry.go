@@ -1,10 +1,14 @@
 package runtime
 
 import (
+	"context"
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
+
+	"walrusd/litestream"
 	"walrusd/walrusderr"
 )
 
@@ -118,4 +122,41 @@ func isRetryableWrite(err error) bool {
 	default:
 		return false
 	}
+}
+
+// classifySQLError maps an error from the runtime's SQL/session layer to
+// the class that drives both the caller-visible code and the outer retry
+// decision. A deterministic SQLite failure (constraint violation,
+// read-only database, corruption) must not burn the retry budget re-running
+// a transaction that will fail identically every time.
+func classifySQLError(err error) walrusderr.Class {
+	if errors.Is(err, litestream.ErrRegistryBusy) {
+		return walrusderr.ClassBusy
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// Attempt-scoped timeouts repeat with the same idempotency key.
+		return walrusderr.ClassBusy
+	}
+	var se sqlite3.Error
+	if errors.As(err, &se) {
+		switch se.Code {
+		case sqlite3.ErrBusy, sqlite3.ErrLocked:
+			return walrusderr.ClassBusy
+		case sqlite3.ErrConstraint, sqlite3.ErrRange, sqlite3.ErrMismatch:
+			return walrusderr.ClassInvalidArgument
+		case sqlite3.ErrReadonly, sqlite3.ErrPerm, sqlite3.ErrFull,
+			sqlite3.ErrTooBig, sqlite3.ErrCorrupt, sqlite3.ErrNotADB:
+			return walrusderr.ClassConfigurationInvalid
+		}
+	}
+	return walrusderr.ClassConflict
+}
+
+// wrapSessionOpen classifies a failed session open: a busy VFS registry is
+// retryable contention; anything else is remote unavailability.
+func wrapSessionOpenError(msg string, err error) error {
+	if errors.Is(err, litestream.ErrRegistryBusy) {
+		return walrusderr.Wrap(walrusderr.ClassBusy, msg, err)
+	}
+	return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, msg, err)
 }

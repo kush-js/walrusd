@@ -75,7 +75,6 @@ describe("WalrusdDatabase", () => {
       maxReadInstances: 2,
       readInstanceIdleTtlMs: 100,
       vfsPageCacheBytes: 64 * 1024,
-      writeSyncIntervalMs: 100,
       maxTempWriteBuffer: 2 * 1024 * 1024,
     });
     const ids = Array.from({ length: 5 }, (_, i) => `users/bun-eviction-${Date.now()}-${i}`);

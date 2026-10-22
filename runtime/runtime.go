@@ -30,6 +30,10 @@ type Config struct {
 	MaxReadInstances    int
 	MaxTempWriteBuffer  int64
 	Compaction          CompactionConfig
+	// MaxReadResultBytes caps the JSON size of one read's rows. A runaway
+	// query must fail cleanly instead of OOM-ing the process. <= 0
+	// disables the cap.
+	MaxReadResultBytes int64
 	// RequireFlushBeforeRelease must stay true (spec §16 durability); the
 	// runtime rejects configuration that disables it.
 	RequireFlushBeforeRelease bool
@@ -58,6 +62,7 @@ func DefaultConfig() Config {
 		ReadInstanceIdleTTL: 60 * time.Second,
 		MaxReadInstances:    200,
 		MaxTempWriteBuffer:  268435456,
+		MaxReadResultBytes:  67108864,
 		Compaction: CompactionConfig{
 			Enabled:   true,
 			Interval:  8,
@@ -401,7 +406,7 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 			}
 			r.reads.Evict(key)
 			if !errors.Is(err, errReadSessionClosed) {
-				return err
+				return walrusderr.Wrap(classifySQLError(err), "read failed", err)
 			}
 		}
 	}
@@ -430,13 +435,13 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 		session, err = vfs.OpenRead(ctx, db.ID)
 	}
 	if err != nil {
-		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open read session", err)
+		return wrapSessionOpenError("open read session", err)
 	}
 	r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadOpens++ })
 	cached := newCachedReadSession(session, metricsID)
 	if err := cached.run(ctx, fn); err != nil {
 		_ = cached.Close()
-		return err
+		return walrusderr.Wrap(classifySQLError(err), "read failed", err)
 	}
 	r.reads.Put(cached)
 	return nil
@@ -630,7 +635,7 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 		session, err = vfs.OpenWrite(ctx, db.ID)
 	}
 	if err != nil {
-		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "open write session", err))
+		return zero, r.failWithLease(ctx, held, wrapSessionOpenError("open write session", err))
 	}
 	// Cleanup uses a non-cancelled context so ROLLBACK runs even when the
 	// request deadline fired mid-transaction.
@@ -643,7 +648,7 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 	// must not manage transactions themselves.
 	if _, err := session.Exec(ctx, `BEGIN IMMEDIATE`); err != nil {
 		session.Close()
-		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassConflict, "begin write transaction", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(classifySQLError(err), "begin write transaction", err))
 	}
 	var result WriteResult
 	// Idempotency check (spec §8): a retry with the same key returns the
@@ -696,14 +701,23 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 		if isNestedTxError(err) {
 			return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "write callback must not manage transactions (no BEGIN/COMMIT inside fn)", err))
 		}
-		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassConflict, "transaction failed", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(classifySQLError(err), "transaction failed", err))
 	}
 	r.metrics.Record(dbKey, func(m *observability.Metrics) { m.WriteTransactions++ })
+	// A callback that outlived its attempt deadline must not commit: the
+	// request budget bounds each attempt (spec §8), the caller has stopped
+	// waiting, and sqlite's context interruption is not deterministic for
+	// callbacks that ignore ctx. This check is the deterministic backstop.
+	if ctx.Err() != nil {
+		rollback()
+		session.Close()
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassBusy, "write attempt exceeded its deadline; transaction rolled back, retry with the same idempotency key", ctx.Err()))
+	}
 	nextTXID, err := session.NextTXID()
 	if err != nil {
 		rollback()
 		session.Close()
-		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(walrusderr.ClassConflict, "compute next txid", err))
+		return zero, r.failWithLease(ctx, held, walrusderr.Wrap(classifySQLError(err), "compute next txid", err))
 	}
 	if err := session.Run(ctx, func(conn *sql.Conn) error {
 		return recordIdempotent(ctx, conn, idempotencyKey, nextTXID)
@@ -719,6 +733,7 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 	if r.leaseStale(held) {
 		rollback()
 		session.Close()
+		r.leases.Abandon(held)
 		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.LeaseReleaseConflicts++ })
 		return zero, walrusderr.New(walrusderr.ClassLeaseConflict, "lease expired before flush; transaction rolled back, retry with the same idempotency key")
 	}
@@ -749,13 +764,25 @@ func (r *Runtime) withWriteAttempt(ctx context.Context, db identity.DatabaseID, 
 		m.FlushSuccesses++
 		m.FlushDurationMicros += uint64(time.Since(flushStart).Microseconds())
 	})
+	// Renewal keeps the fence alive across the flush, but if the store
+	// became unreachable or a successor appeared mid-upload, the chain may
+	// be forked: never acknowledge, never release. The caller retries with
+	// the same idempotency key and dedupe resolves the ambiguity.
+	if r.leaseStale(held) {
+		session.Close()
+		r.leases.Abandon(held)
+		r.metrics.Record(dbKey, func(m *observability.Metrics) { m.IdempotencyAmbiguousOutcomes++ })
+		return zero, walrusderr.New(walrusderr.ClassFlushFailed, "lease lost during flush; write not acknowledged, retry with the same idempotency key")
+	}
 	txid, txidErr := session.TXID()
 	if txidErr != nil {
 		session.Close()
+		r.leases.Abandon(held)
 		return zero, walrusderr.Wrap(walrusderr.ClassFlushFailed, "read txid after flush", txidErr)
 	}
 	if txid != nextTXID {
 		session.Close()
+		r.leases.Abandon(held)
 		return zero, walrusderr.New(walrusderr.ClassFlushFailed,
 			fmt.Sprintf("flushed txid %s does not match recorded txid %s", txid, nextTXID))
 	}
@@ -901,16 +928,17 @@ func (r *Runtime) runCompaction(parent context.Context, job compactionJob) {
 }
 
 // leaseStale reports whether the held lease already ran past its expiry
-// (minus clock-skew allowance). Flushing or releasing now would risk
-// forking the LTX chain under a successor owner.
+// (minus clock-skew allowance), or renewal observed it lost. Flushing or
+// releasing now would risk forking the LTX chain under a successor owner.
 func (r *Runtime) leaseStale(held *lease.Held) bool {
-	if held == nil {
+	if held == nil || held.Lost() {
 		return true
 	}
-	return !time.Now().Before(held.Record.ExpiresAt.Add(-r.cfg.Lease.ClockSkewAllowance))
+	return !time.Now().Before(held.ExpiresAt().Add(-r.cfg.Lease.ClockSkewAllowance))
 }
 
 // isNestedTxError detects callbacks that issued their own BEGIN/SAVEPOINT.
+// It matches SQLite's own errmsg strings, which are stable across versions.
 func isNestedTxError(err error) bool {
 	if err == nil {
 		return false
@@ -923,14 +951,19 @@ func isNestedTxError(err error) bool {
 
 // failWithLease discards the write session and releases the lease when no
 // writes reached the VFS (open failed before write mode did real work).
+// Release runs on a non-cancellable context: it is cleanup, and a caller
+// whose deadline just fired must not leak the lease window.
 func (r *Runtime) failWithLease(ctx context.Context, held *lease.Held, cause error) error {
-	_ = r.leases.Release(ctx, held) // best-effort; conflicts surface to caller
+	_ = r.leases.Release(context.WithoutCancel(ctx), held) // best-effort; conflicts surface to caller
 	return cause
 }
 
 // flushFailure maps a failed flush barrier to DB_FLUSH_FAILED and leaves the
-// lease to expire (spec §12: "Flush fails" row).
-func (r *Runtime) flushFailure(_ context.Context, _ *lease.Held, cause error) error {
+// lease to expire (spec §12: "Flush fails" row). Renewal is stopped, but
+// the record is never released: an unconfirmed flush may still land, and a
+// released lease would invite a successor into a possibly forked chain.
+func (r *Runtime) flushFailure(_ context.Context, held *lease.Held, cause error) error {
+	r.leases.Abandon(held)
 	if walrusderr.ClassOf(cause) == walrusderr.ClassConflict {
 		return walrusderr.Wrap(walrusderr.ClassConflict, "litestream writer conflict during flush", cause)
 	}

@@ -107,14 +107,31 @@ The default outer schedule is ten `1s` delays followed by `2s`, `4s`, `8s`,
 |---|---:|---|---|
 | `maxReadInstances` | `200` | databases | Maximum resident database read instances (an LRU). Values at or below `0` use the runtime fallback of 64 resident databases and disable the read-session cache |
 | `readInstanceIdleTtlMs` | `60000` | milliseconds | Close a database's read session after this much idle time. Values at or below `0` disable the read-session cache entirely |
-| `vfsPageCacheBytes` | `10485760` | bytes | Per-database SQLite page cache size |
+| `vfsPageCacheBytes` | `0` | bytes | Per-database SQLite page cache size; `0` disables it |
+
+### Replica Cache
+
+| Option | Default | Unit | Purpose |
+|---|---:|---|---|
+| `replicaCacheBytes` | `33554432` | bytes | Cache of immutable LTX replica file bytes, evicted LRU. Set `0` to hold no file data; every VFS open then re-reads the replica |
+| `levelListingCacheTtlMs` | `30000` | milliseconds | TTL for the separate compaction-level listing cache (metadata only). Can stay on with `replicaCacheBytes: 0` to skip nine of the ten level listings per open |
+
+### Compaction
+
+| Option | Default | Unit | Purpose |
+|---|---:|---|---|
+| `compactionEnabled` | `true` | bool | Run replica-chain compaction in a background worker |
+| `compactionInterval` | `8` | writes | Writes between compaction checks |
+| `compactionThreshold` | `8` | files | Files in a level that trigger a merge into the next level |
+| `compactionRetentionMs` | `600000` | milliseconds | Age before merged source files are deleted, so an in-flight read can finish |
+| `compactionTimeoutMs` | `30000` | milliseconds | Bound on one compaction pass |
 
 ### Write Buffer
 
 | Option | Default | Unit | Purpose |
 |---|---:|---|---|
 | `writeBufferRootPath` | system temp | path | Root for VFS temporary write buffers |
-| `writeSyncIntervalMs` | `1000` | milliseconds | Background VFS sync interval forwarded to Litestream configuration; the synchronous flush before lease release remains the durability barrier |
+| `maxReadResultBytes` | `67108864` | bytes | Cap on one read's marshaled rows. Larger results fail with `DB_INVALID_ARGUMENT` instead of exhausting process memory. Values at or below `0` disable the cap |
 | `maxTempWriteBuffer` | `268435456` | bytes | Per-process temporary write-buffer cap. Values at or below `0` disable the cap |
 
 ### Redis
@@ -144,10 +161,14 @@ The approximate read-path memory ceiling is:
 maxReadInstances * vfsPageCacheBytes
 ```
 
-At the defaults, 200 resident databases with fully warm 10 MiB page caches
-can use about 2 GiB (`200 * 10485760` bytes), plus the resident VFS and
-replica-client overhead for each database. Use a smaller page cache, a
-smaller resident limit, or both when memory is constrained.
+At the defaults `vfsPageCacheBytes` is `0`, so the read path holds no page
+cache and every read fetches the pages SQLite requests from object storage.
+Opting into a page cache raises the approximate ceiling to
+`maxReadInstances * vfsPageCacheBytes`: 200 resident databases with fully
+warm 10 MiB caches (`10485760`) can use about 2 GiB (`200 * 10485760`
+bytes), plus the resident VFS and replica-client overhead for each
+database. Use a smaller page cache, a smaller resident limit, or both when
+memory is constrained.
 
 Eviction is safe. The durable data is in object storage; evicting a database
 drops its VFS, page cache, and replica client, and the next access opens a

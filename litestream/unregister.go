@@ -10,6 +10,7 @@ extern int sqlite3_vfs_unregister(sqlite3_vfs*);
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"unsafe"
 
@@ -32,8 +33,10 @@ import (
 // it here would risk a use-after-free for only a few hundred bytes per
 // registration.
 func unregisterVFS(name string) error {
-	vfsRegistryMu.Lock()
-	defer vfsRegistryMu.Unlock()
+	if err := lockRegistry(context.Background()); err != nil {
+		return err
+	}
+	defer unlockRegistry()
 
 	if p := findSQLiteVFS(name); p != nil {
 		if rc := C.sqlite3_vfs_unregister(p); rc != 0 {
@@ -53,8 +56,10 @@ func findSQLiteVFS(name string) *C.sqlite3_vfs {
 }
 
 func sqliteVFSRegistered(name string) bool {
-	vfsRegistryMu.Lock()
-	defer vfsRegistryMu.Unlock()
+	if err := lockRegistry(context.Background()); err != nil {
+		return false
+	}
+	defer unlockRegistry()
 	return findSQLiteVFS(name) != nil
 }
 

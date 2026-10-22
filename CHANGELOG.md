@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0
+
+Production-hardening pass from a full pre-production audit, rebased onto 0.5.17's durable-manifest and async-compaction architecture. Several response values and one config knob change.
+
+- **The LTX chain no longer grows without bound.** Confirmed on top of 0.5.15-0.5.17: compaction and pruning keep the chain bounded (see those entries for the manifest and separate-lease machinery). This pass adds the regression coverage: compaction, pruning, and read-back after pruning.
+- **Leases are heartbeated while held.** A slow-but-correct transaction or flush can no longer outlive its lease and fork the LTX chain under a successor. Renewal is bounded to three lease durations, so a wedged process is still takeable by expiry — crash takeover semantics are unchanged. `lease.Manager` gains `Abandon` for paths that must leave a lease to expire; unconfirmed flushes use it.
+- **Deterministic SQL errors are terminal.** Constraint violations, read-only databases, and similar failures now surface once as `DB_INVALID_ARGUMENT` / `DB_CONFIGURATION_INVALID` instead of being retried for the full 64s budget as `DB_CONFLICT`. Busy/locked/timeout errors stay retryable.
+- **A write attempt that outlives its deadline is rolled back and fails** instead of racing sqlite's context interruption to commit after the caller stopped waiting.
+- **Read rows: BLOB values are now base64 strings.** Previously they were coerced through a UTF-8 JSON string, silently corrupting non-UTF-8 bytes. Duplicate column names now get `_2`, `_3`, ... suffixes instead of collapsing (`SELECT a.id, b.id` keeps both).
+- **Parameters: exact 64-bit integers.** Number literals are bound as int64 instead of float64, so JSON clients that emit exact literals no longer round above 2^53. TypeScript callers get a clear `DB_INVALID_ARGUMENT` for unsafe integers and bigints (pass decimal strings; INTEGER affinity converts losslessly), and `Uint8Array`/`Buffer` parameters bind as BLOB (`{"$blob": "<base64>"}` on the wire).
+- **Read results are capped** by `MaxReadResultBytes` (default 64 MiB, `max_read_result_bytes` in the C ABI, `maxReadResultBytes` in `@walrusd/db`): a runaway query fails cleanly instead of exhausting process memory.
+- **Node/Bun concurrency:** blocking core calls moved off libuv's 4-thread pool onto dedicated worker threads with threadsafe-function delivery. Concurrent database calls no longer throttle each other or starve file/DNS work. Shared-library symbol resolution is serialized; `init` failures now surface the underlying error message via `walrusd_runtime_init_error`.
+- Removed `write_sync_interval_ms` / `WriteSyncInterval`: the knob was plumbed but never reached the VFS (writes always flush synchronously before lease release — that is the durability barrier). Removed from the C ABI config, `RuntimeOptions`, and docs. This applies the removal 0.5.17 already made to the `litestream` package; superseded is the old belief that the registry lock is held across a session callback (a bounded semaphore was never needed once `sqlite3vfs` moved to a `sync.Map`).
+- Smaller fixes: Redis client closed on failed adapter construction; `replica_url` query values are URL-escaped; `failWithLease` releases on a non-cancellable context so a just-expired caller deadline does not leak the lease window; release conflicts after a confirmed flush are handled without acknowledging an ambiguous write; the lease single-flight map is pruned (bounded by in-flight acquisitions, not databases ever seen).
+
 ## 0.5.17
 
 - **VFS registry concurrency**: vendored `psanford/sqlite3vfs` with a `sync.Map` dispatch table. The process-global registry mutex is no longer held across VFS opens or SQL execution, so requests for different databases run concurrently again.
@@ -24,7 +39,6 @@
 
 ## 0.5.13
 
-- Cache immutable LTX files and stable level listings per database. Litestream re-reads the header, page index, and trailer of every file in the replica chain on each VFS open (seven ranged GETs per file) plus one LIST per compaction level; writes are not session-cached and WALrus does not compact, so every write paid the whole chain and got slower as the chain grew. Against SeaweedFS with 30ms injected latency, a nine-operation sequence dropped from 158 S3 requests to 29 and from 0.75-1.0s per write (rising with chain length) to a flat ~150ms; a cold read went from ~0.98s to ~0.09s. Levels 1-9 listings are cached for 30s (only a compactor writes them; an in-process write or delete invalidates its level); level 0 is always listed fresh. Files are cached by TXID and dropped on write/delete. The cache is optional: `replica_cache_bytes` (default 32 MiB) bounds it per runtime, and 0 disables it when the host process's memory belongs to something else.
 
 ## 0.5.12
 

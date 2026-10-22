@@ -4,6 +4,14 @@
 // read VFSes on demand via the walrusd_vfs_attach() SQL function —
 // multi-tenant, unlike the env-var single-replica litestream-ext sample.
 //
+// Known constraint: sqlite3vfs keeps its process-global VFS map unsynchronized
+// (its dispatch path reads the map without a lock), so walrusd_vfs_attach
+// must not run concurrently with other connections opening through
+// registered VFSes in the same process. Attach databases during startup
+// (before serving concurrent queries) or serialize attach calls per
+// process. The core runtime guards this with its own registry semaphore;
+// the extension cannot intercept the host's dispatch path.
+//
 // Build:
 //
 //	go build -buildmode=c-shared -tags "vfs SQLITE3VFS_LOADABLE_EXT" \

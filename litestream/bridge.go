@@ -1,6 +1,7 @@
 package litestream
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 
 	ls "github.com/benbjohnson/litestream"
 	"github.com/psanford/sqlite3vfs"
+	"github.com/superfly/ltx"
 )
 
 // wrapperVFS delegates to a litestream VFS and captures each opened main-DB
@@ -109,7 +111,7 @@ func (w *wrapperVFS) forgetFile(name string) {
 // Database is one registered database VFS in this process.
 type Database struct {
 	Bridge        *Bridge
-	VFSName       string  // name passed as ?vfs= in the DSN
+	VFSName       string  // name passed to ?vfs= in the DSN
 	Key           string  // canonical database key
 	ReplicaPrefix string  // object-store replica prefix
 	Profile       Profile // trusted storage profile (credentials resolved)
@@ -120,6 +122,9 @@ type Database struct {
 	writeMu      sync.Mutex
 	writeVFSName string
 	writeWrapper *wrapperVFS
+
+	maintainMu   sync.Mutex
+	lastMaintain [maxMaintainLevel]time.Time // last compaction per level
 }
 
 // RegisterDatabase registers a unique VFS for one database replica.
@@ -211,6 +216,134 @@ func (d *Database) ensureWriteVFS() (*wrapperVFS, error) {
 	d.writeVFSName = name
 	d.writeWrapper = w
 	return w, nil
+}
+
+// maxMaintainLevel is the deepest compaction level; level 9 is reserved for
+// snapshots. Eight levels make the chain logarithmic in write count, so
+// cold opens walk a bounded number of LTX files no matter the write volume.
+const maxMaintainLevel = 8
+
+// maintainIntervals is the compaction cadence per destination level
+// (index i = level i+1), mirroring litestream's DefaultCompactionLevels
+// shape: each level aggregates the one below over a longer window. Tests
+// shorten these; production keeps upstream-scale cadence.
+var maintainIntervals = [maxMaintainLevel]time.Duration{
+	30 * time.Second,
+	5 * time.Minute,
+	1 * time.Hour,
+	6 * time.Hour,
+	24 * time.Hour,
+	72 * time.Hour,
+	240 * time.Hour,
+	720 * time.Hour,
+}
+
+// pruneAge is how long a source LTX file stays after a higher level covers
+// it. Readers' page indexes refresh from the replica every poll interval
+// (500ms), so a generous age leaves no reader pointing at pruned files.
+// Tests shorten this.
+var pruneAge = 2 * time.Minute
+
+// maintainBudget caps one maintenance pass so a slow replica cannot pin a
+// write request; unfinished compaction simply runs on a later write.
+const maintainBudget = 10 * time.Second
+
+// Maintain compacts the replica chain and prunes source files already
+// covered by higher levels. walrusd writes one LTX file per transaction;
+// without this the chain grows forever and cold opens walk every file ever
+// written. Levels are compacted on their own cadence so each level
+// aggregates the one below it instead of growing per write.
+//
+// Call only while holding the database lease: compaction and pruning write
+// to the replica, and the lease is what serializes writers. Errors are
+// returned for observability; they must never fail the flushed write.
+func (d *Database) Maintain(ctx context.Context, file *ls.VFSFile) error {
+	d.maintainMu.Lock()
+	var due []int
+	for i, interval := range maintainIntervals {
+		if time.Since(d.lastMaintain[i]) >= interval {
+			d.lastMaintain[i] = time.Now()
+			due = append(due, i)
+		}
+	}
+	d.maintainMu.Unlock()
+	if len(due) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, maintainBudget)
+	defer cancel()
+
+	var errs []error
+	for _, i := range due {
+		if _, err := file.Compact(ctx, i+1); err != nil &&
+			!errors.Is(err, ls.ErrNoCompaction) &&
+			!errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) {
+			errs = append(errs, err)
+		}
+		if ctx.Err() != nil {
+			return errors.Join(errs...)
+		}
+	}
+	if err := d.pruneCovered(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// pruneCovered deletes source LTX files older than pruneAge whose whole
+// TXID range sits inside one file of the next level. Containment in a
+// single file always holds for our compaction — each Compact merges whole
+// source files into one destination file — so pruning can never remove
+// state a restore plan needs. The newest deletable file per level is kept
+// so every level always has a starting point.
+func (d *Database) pruneCovered(ctx context.Context) error {
+	client := d.writeWrapper.client
+	var errs []error
+	for level := 0; level < maxMaintainLevel; level++ {
+		covered, err := listLTXFiles(ctx, client, level+1)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		sources, err := listLTXFiles(ctx, client, level)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		var stale []*ltx.FileInfo
+		for _, s := range sources {
+			if time.Since(s.CreatedAt) < pruneAge {
+				continue
+			}
+			for _, n := range covered {
+				if n.MinTXID <= s.MinTXID && s.MaxTXID <= n.MaxTXID {
+					stale = append(stale, s)
+					break
+				}
+			}
+		}
+		if len(stale) > 1 {
+			if err := client.DeleteLTXFiles(ctx, stale[:len(stale)-1]); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// listLTXFiles materializes the file list for one level, ascending.
+func listLTXFiles(ctx context.Context, client ls.ReplicaClient, level int) ([]*ltx.FileInfo, error) {
+	itr, err := client.LTXFiles(ctx, level, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	var infos []*ltx.FileInfo
+	for itr.Next() {
+		infos = append(infos, itr.Item())
+	}
+	return infos, itr.Close()
 }
 
 // Close releases process-local files and process-global VFS registrations

@@ -287,7 +287,13 @@ func (s *Session) DisableWrite() error {
 // lands on the same VFS file (spec §8).
 func (s *Session) SQLConn() *sql.Conn { return s.conn }
 
-// Run executes fn while the process-global VFS registry is stable.
+// Run executes fn on this session's dedicated connection.
+//
+// The vendored sqlite3vfs dispatches through a sync.Map, so statement-level
+// VFS callbacks do not serialize on a process-global lock. fn still MUST NOT
+// call back into the runtime (WithRead, WithWrite, ReadDSN, new database
+// registration): a nested write contends with the transaction fn is running,
+// and a nested open would register a second VFS for the same database.
 func (s *Session) Run(ctx context.Context, fn func(*sql.Conn) error) error {
 	s.mu.Lock()
 	conn := s.conn

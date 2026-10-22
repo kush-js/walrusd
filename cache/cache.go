@@ -64,7 +64,9 @@ func (c *Cache) SetObserver(onAdd, onRemove func(ReadInstance)) {
 }
 
 // Get returns the cached instance for key, refreshing its LRU position.
-// The caller must call Release (not Close) when finished using it.
+// The caller uses the instance while it runs; eviction or replacement
+// closes it once no run is in flight (cachedReadSession serializes runs
+// against close).
 func (c *Cache) Get(key string) (ReadInstance, bool) {
 	if c.max <= 0 || c.idleTTL <= 0 {
 		return nil, false

@@ -1,11 +1,14 @@
 package c
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -17,7 +20,8 @@ import (
 
 // Adapter adapts the Go runtime.Runtime to the byte-envelope ABI.
 type Adapter struct {
-	rt *runtime.Runtime
+	rt                 *runtime.Runtime
+	maxReadResultBytes int64
 }
 
 // NewAdapter builds an Adapter over a lease-store-backed runtime.
@@ -26,7 +30,7 @@ func NewAdapter(store lease.Store, owner string, cfg runtime.Config) (*Adapter, 
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{rt: rt}, nil
+	return &Adapter{rt: rt, maxReadResultBytes: cfg.MaxReadResultBytes}, nil
 }
 
 // ReadDSNRequest asks for a natively-openable read DSN for a descriptor.
@@ -98,7 +102,7 @@ type ReadResult struct {
 
 func (a *Adapter) WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	var r WriteRequest
-	if err := json.Unmarshal(req, &r); err != nil {
+	if err := decodeRequest(req, &r); err != nil {
 		return nil, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "decode write request", err)
 	}
 	cctx, cancel := ctx.context()
@@ -107,7 +111,7 @@ func (a *Adapter) WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	d := ddescriptor(r.Descriptor)
 	res, err := a.rt.WithWrite(cctx, d, r.IdempotencyKey, func(conn *sql.Conn) error {
 		for i, st := range r.Statements {
-			if _, err := conn.ExecContext(cctx, st.SQL, st.Params...); err != nil {
+			if _, err := conn.ExecContext(cctx, st.SQL, bindParams(st.Params)...); err != nil {
 				sum := sha256.Sum256([]byte(st.SQL))
 				return fmt.Errorf("statement %d (sql sha256:%x): %w", i, sum[:8], err)
 			}
@@ -122,7 +126,7 @@ func (a *Adapter) WithWriteBytes(ctx handledCtx, req []byte) ([]byte, error) {
 
 func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	var r ReadRequest
-	if err := json.Unmarshal(req, &r); err != nil {
+	if err := decodeRequest(req, &r); err != nil {
 		return nil, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "decode read request", err)
 	}
 	cctx, cancel := ctx.context()
@@ -131,7 +135,7 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 	d := ddescriptor(r.Descriptor)
 	var res ReadResult
 	err := a.rt.WithRead(cctx, d, func(conn *sql.Conn) error {
-		rows, err := conn.QueryContext(cctx, r.SQL, r.Params...)
+		rows, err := conn.QueryContext(cctx, r.SQL, bindParams(r.Params)...)
 		if err != nil {
 			return err
 		}
@@ -140,7 +144,9 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 		if err != nil {
 			return err
 		}
+		keys := uniqueColumnKeys(cols)
 		res.Columns = cols
+		var total int
 		for rows.Next() {
 			vals := make([]any, len(cols))
 			ptrs := make([]any, len(cols))
@@ -151,12 +157,19 @@ func (a *Adapter) WithReadBytes(ctx handledCtx, req []byte) ([]byte, error) {
 				return err
 			}
 			row := make(map[string]any, len(cols))
-			for i, c := range cols {
-				row[c] = normalize(vals[i])
+			for i := range cols {
+				row[keys[i]] = normalize(vals[i])
 			}
 			b, err := json.Marshal(row)
 			if err != nil {
 				return err
+			}
+			// A runaway query must not OOM the process: the write path has
+			// MaxTempWriteBuffer, the read path has this cap.
+			total += len(b)
+			if a.maxReadResultBytes > 0 && int64(total) > a.maxReadResultBytes {
+				return walrusderr.New(walrusderr.ClassInvalidArgument,
+					fmt.Sprintf("read result exceeds %d bytes", a.maxReadResultBytes))
 			}
 			res.Rows = append(res.Rows, b)
 		}
@@ -208,10 +221,10 @@ func (a *Adapter) ReadDSNBytes(ctx handledCtx, req []byte) ([]byte, error) {
 		u := "s3://" + p.Bucket + "/" + prefix
 		q := []string{}
 		if p.Endpoint != "" {
-			q = append(q, "endpoint="+p.Endpoint)
+			q = append(q, "endpoint="+url.QueryEscape(p.Endpoint))
 		}
 		if p.Region != "" {
-			q = append(q, "region="+p.Region)
+			q = append(q, "region="+url.QueryEscape(p.Region))
 		}
 		if len(q) > 0 {
 			u += "?" + strings.Join(q, "&")
@@ -252,11 +265,69 @@ func (c handledCtx) context() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
 }
 
-// normalize converts driver values into JSON-safe equivalents.
+// decodeRequest decodes an envelope payload keeping JSON number literals
+// exact (json.Number) so 64-bit integers survive the round trip.
+func decodeRequest(req []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(req))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
+
+// bindParams converts JSON values to SQLite-native binds. Integral number
+// literals bind as int64: the JSON default of float64 silently rounds
+// integers above 2^53. Non-integral literals bind as float64. A { "$blob":
+// "<base64>" } object binds as a BLOB byte slice.
+func bindParams(params []any) []any {
+	out := make([]any, len(params))
+	for i, p := range params {
+		if n, ok := p.(json.Number); ok {
+			if iv, err := n.Int64(); err == nil {
+				out[i] = iv
+			} else if fv, err := n.Float64(); err == nil {
+				out[i] = fv
+			} else {
+				out[i] = n.String()
+			}
+			continue
+		}
+		if m, ok := p.(map[string]any); ok {
+			if b, ok := m["$blob"].(string); ok {
+				if raw, err := base64.StdEncoding.DecodeString(b); err == nil {
+					out[i] = raw
+					continue
+				}
+			}
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// uniqueColumnKeys disambiguates duplicate column names so `SELECT a.id,
+// b.id` keeps both values instead of silently collapsing them. The first
+// occurrence keeps its name; later ones get a _2, _3, ... suffix.
+func uniqueColumnKeys(cols []string) []string {
+	seen := make(map[string]int, len(cols))
+	keys := make([]string, len(cols))
+	for i, c := range cols {
+		n := seen[c]
+		seen[c] = n + 1
+		if n == 0 {
+			keys[i] = c
+			continue
+		}
+		keys[i] = fmt.Sprintf("%s_%d", c, n+1)
+	}
+	return keys
+}
+
+// normalize converts driver values into JSON-safe equivalents. BLOBs are
+// base64: a JSON string cannot carry raw bytes without corrupting non-UTF-8
+// content.
 func normalize(v any) any {
 	switch t := v.(type) {
 	case []byte:
-		return string(t)
+		return base64.StdEncoding.EncodeToString(t)
 	default:
 		return v
 	}

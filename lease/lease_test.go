@@ -157,6 +157,9 @@ func TestStaleReleaseConflicts(t *testing.T) {
 	m, _ := lease.NewManager(store, "api-a", cfg, nil), store
 	d := db(t)
 	held, _ := m.Acquire(context.Background(), d)
+	// Abandon simulates the holder crashing: renewal stops and the record
+	// expires untouched, which is what makes takeover-after-expiry legal.
+	m.Abandon(held)
 	time.Sleep(15 * time.Millisecond)
 	other, err := m.Acquire(context.Background(), d) // takeover via expiry
 	if err != nil {
@@ -208,6 +211,9 @@ func TestEpochMonotonic(t *testing.T) {
 			t.Fatalf("epoch not monotonic: %d after %d", held.Epoch(), prev)
 		}
 		prev = held.Epoch()
+		// Abandon simulates a crash: renewal stops, the record expires, and
+		// the next acquire takes over — the epoch must keep rising.
+		m.Abandon(held)
 		time.Sleep(8 * time.Millisecond)
 	}
 }

@@ -15,8 +15,9 @@ func TestBuildRuntimeConfigReadAndWriteKnobs(t *testing.T) {
 			"max_read_instances": 7,
 			"read_instance_idle_ttl_ms": 1250,
 			"vfs_page_cache_bytes": 1048576,
-			"write_sync_interval_ms": 250,
+			"vfs_page_cache_bytes": 1048576,
 			"max_temp_write_buffer": 4194304,
+			"max_read_result_bytes": 2048,
 			"replica_cache_bytes": 2097152,
 			"level_listing_cache_ttl_ms": 45000,
 			"compaction_enabled": false,
@@ -42,11 +43,11 @@ func TestBuildRuntimeConfigReadAndWriteKnobs(t *testing.T) {
 	if got, want := cfg.Litestream.VFSPageCacheBytes, 1048576; got != want {
 		t.Errorf("VFSPageCacheBytes = %d, want %d", got, want)
 	}
-	if got, want := cfg.Litestream.WriteSyncInterval, int64(250); got != want {
-		t.Errorf("WriteSyncInterval = %d, want %d", got, want)
-	}
 	if got, want := cfg.MaxTempWriteBuffer, int64(4194304); got != want {
 		t.Errorf("MaxTempWriteBuffer = %d, want %d", got, want)
+	}
+	if got, want := cfg.MaxReadResultBytes, int64(2048); got != want {
+		t.Errorf("MaxReadResultBytes = %d, want %d", got, want)
 	}
 	if got, want := cfg.Litestream.ReplicaCacheBytes, int64(2097152); got != want {
 		t.Errorf("ReplicaCacheBytes = %d, want %d", got, want)
@@ -84,11 +85,11 @@ func TestBuildRuntimeConfigReadAndWriteKnobsDefaultWhenOmitted(t *testing.T) {
 	if cfg.Litestream.VFSPageCacheBytes != defaults.Litestream.VFSPageCacheBytes {
 		t.Errorf("VFSPageCacheBytes = %d, want default %d", cfg.Litestream.VFSPageCacheBytes, defaults.Litestream.VFSPageCacheBytes)
 	}
-	if cfg.Litestream.WriteSyncInterval != defaults.Litestream.WriteSyncInterval {
-		t.Errorf("WriteSyncInterval = %d, want default %d", cfg.Litestream.WriteSyncInterval, defaults.Litestream.WriteSyncInterval)
-	}
 	if cfg.MaxTempWriteBuffer != defaults.MaxTempWriteBuffer {
 		t.Errorf("MaxTempWriteBuffer = %d, want default %d", cfg.MaxTempWriteBuffer, defaults.MaxTempWriteBuffer)
+	}
+	if cfg.MaxReadResultBytes != defaults.MaxReadResultBytes {
+		t.Errorf("MaxReadResultBytes = %d, want default %d", cfg.MaxReadResultBytes, defaults.MaxReadResultBytes)
 	}
 	if cfg.Litestream.ReplicaCacheBytes != defaults.Litestream.ReplicaCacheBytes {
 		t.Errorf("ReplicaCacheBytes = %d, want default %d", cfg.Litestream.ReplicaCacheBytes, defaults.Litestream.ReplicaCacheBytes)
@@ -105,8 +106,9 @@ func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
 			"max_read_instances": 0,
 			"read_instance_idle_ttl_ms": 0,
 			"vfs_page_cache_bytes": 0,
-			"write_sync_interval_ms": 0,
+			"vfs_page_cache_bytes": 0,
 			"max_temp_write_buffer": 0,
+			"max_read_result_bytes": 0,
 			"replica_cache_bytes": 0,
 			"level_listing_cache_ttl_ms": 0,
 			"compaction_enabled": false,
@@ -129,11 +131,11 @@ func TestBuildRuntimeConfigReadAndWriteKnobsPreserveExplicitZero(t *testing.T) {
 	if cfg.Litestream.VFSPageCacheBytes != 0 {
 		t.Errorf("VFSPageCacheBytes = %d, want 0", cfg.Litestream.VFSPageCacheBytes)
 	}
-	if cfg.Litestream.WriteSyncInterval != 0 {
-		t.Errorf("WriteSyncInterval = %d, want 0", cfg.Litestream.WriteSyncInterval)
-	}
 	if cfg.MaxTempWriteBuffer != 0 {
 		t.Errorf("MaxTempWriteBuffer = %d, want 0", cfg.MaxTempWriteBuffer)
+	}
+	if cfg.MaxReadResultBytes != 0 {
+		t.Errorf("MaxReadResultBytes = %d, want 0", cfg.MaxReadResultBytes)
 	}
 	if cfg.Litestream.ReplicaCacheBytes != 0 {
 		t.Errorf("ReplicaCacheBytes = %d, want 0", cfg.Litestream.ReplicaCacheBytes)

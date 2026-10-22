@@ -9,6 +9,7 @@ import "C"
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -38,8 +39,8 @@ type runtimeConfig struct {
 	MaxReadInstances       *int     `json:"max_read_instances,omitempty"`
 	ReadInstanceIdleTTLMs  *int64   `json:"read_instance_idle_ttl_ms,omitempty"`
 	VFSPageCacheBytes      *int     `json:"vfs_page_cache_bytes,omitempty"`
-	WriteSyncIntervalMs    *int64   `json:"write_sync_interval_ms,omitempty"`
 	MaxTempWriteBuffer     *int64   `json:"max_temp_write_buffer,omitempty"`
+	MaxReadResultBytes     *int64   `json:"max_read_result_bytes,omitempty"`
 	ReplicaCacheBytes      *int64   `json:"replica_cache_bytes,omitempty"`
 	LevelListingCacheTTLMs *int64   `json:"level_listing_cache_ttl_ms,omitempty"`
 	CompactionEnabled      *bool    `json:"compaction_enabled,omitempty"`
@@ -58,13 +59,16 @@ type runtimeConfig struct {
 
 // walrusd_runtime_init creates a runtime over a lease store chosen by config.
 // The store provider is Redis/Valkey when redis_address is set, else an
-// in-process memory store. Returns the handle id as a JSON envelope.
+// in-process memory store. Returns the handle id as a JSON envelope; on
+// failure it returns 0 and walrusd_runtime_init_error reports why.
 //
 //export walrusd_runtime_init
 func walrusd_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
+	setInitError("invalid init request")
 	req := C.GoBytes(unsafe.Pointer(requestBytes), n)
 	var r InitRequest
 	if err := json.Unmarshal(req, &r); err != nil {
+		setInitError(err.Error())
 		return 0
 	}
 	cfg := buildRuntimeConfig(r.Config)
@@ -77,6 +81,7 @@ func walrusd_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
 			DB:       r.Config.RedisDB,
 		})
 		if err != nil {
+			setInitError(err.Error())
 			return 0
 		}
 		store = rs
@@ -84,6 +89,10 @@ func walrusd_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
 
 	adapter, err := NewAdapter(store, r.Owner, cfg)
 	if err != nil {
+		if closer, ok := store.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		setInitError(err.Error())
 		return 0
 	}
 	handleMu.Lock()
@@ -91,7 +100,27 @@ func walrusd_runtime_init(requestBytes *C.char, n C.int) C.uint64_t {
 	h := nextHandle
 	nextHandle++
 	runtimes[h] = runtimeEntry{rt: adapter}
+	setInitError("")
 	return C.uint64_t(h)
+}
+
+var initErrMu sync.Mutex
+var initErrMessage string
+
+func setInitError(msg string) {
+	initErrMu.Lock()
+	initErrMessage = msg
+	initErrMu.Unlock()
+}
+
+// walrusd_runtime_init_error returns the last walrusd_runtime_init failure
+// message (empty string when the last init succeeded).
+//
+//export walrusd_runtime_init_error
+func walrusd_runtime_init_error() *C.char {
+	initErrMu.Lock()
+	defer initErrMu.Unlock()
+	return C.CString(initErrMessage)
 }
 
 func buildRuntimeConfig(r runtimeConfig) runtime.Config {
@@ -141,9 +170,6 @@ func buildRuntimeConfig(r runtimeConfig) runtime.Config {
 	if v := r.VFSPageCacheBytes; v != nil {
 		cfg.Litestream.VFSPageCacheBytes = *v
 	}
-	if v := r.WriteSyncIntervalMs; v != nil {
-		cfg.Litestream.WriteSyncInterval = *v
-	}
 	if v := r.MaxTempWriteBuffer; v != nil {
 		cfg.MaxTempWriteBuffer = *v
 	}
@@ -167,6 +193,9 @@ func buildRuntimeConfig(r runtimeConfig) runtime.Config {
 	}
 	if v := r.CompactionTimeoutMs; v != nil {
 		cfg.Compaction.Timeout = time.Duration(*v) * time.Millisecond
+	}
+	if v := r.MaxReadResultBytes; v != nil {
+		cfg.MaxReadResultBytes = *v
 	}
 	return cfg
 }

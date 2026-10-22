@@ -21,7 +21,7 @@ const API_VERSION = 1;
 interface Envelope {
   api_version: number;
   ok: boolean;
-  result?: any;
+  result?: unknown;
   error?: { class: string; message: string; retry_after_ms?: number };
 }
 
@@ -55,6 +55,10 @@ export interface DatabaseDescriptor {
 
 export interface Statement {
   sql: string;
+  /** Values bind positionally. Numbers bind as int64 when integral — but
+   *  JavaScript cannot represent integers above 2^53-1 exactly, so pass
+   *  those as decimal strings (SQLite's INTEGER column affinity converts
+   *  them losslessly). Uint8Array/Buffer values bind as BLOB. */
   params?: unknown[];
 }
 
@@ -77,6 +81,9 @@ export interface ReadOptions {
 
 export interface ReadResult {
   columns: string[];
+  /** One object per row, keyed by column name. BLOB values are base64
+   *  strings; duplicate column names get a _2, _3, ... suffix (a.id and
+   *  b.id arrive as `id` and `id_2`). */
   rows: Record<string, unknown>[];
 }
 
@@ -140,12 +147,13 @@ export interface RuntimeOptions {
   compactionRetentionMs?: number;
   /** Bound on one compaction pass, in milliseconds. Default: 30000. */
   compactionTimeoutMs?: number;
-  /** Background VFS sync interval in milliseconds. Default: 1000. The
-   *  mandatory flush before lease release remains authoritative. */
-  writeSyncIntervalMs?: number;
   /** Per-process temporary write-buffer cap in bytes. Default: 268435456
    *  (256 MiB). Values at or below 0 disable the cap. */
   maxTempWriteBuffer?: number;
+  /** Maximum JSON size in bytes of one read's rows. Default: 67108864
+   *  (64 MiB). Larger results fail with DB_INVALID_ARGUMENT instead of
+   *  exhausting process memory. Values at or below 0 disable the cap. */
+  maxReadResultBytes?: number;
   /** Redis/Valkey address (host:port) for shared leases. Unset = in-process
    *  memory leases (dev/single-process only; no cross-process exclusion). */
   redisAddress?: string;
@@ -236,7 +244,9 @@ function findLib(dir: string): string {
   return files.find((f) => f.startsWith("libwalrusd.") && !f.endsWith(".h")) ?? "";
 }
 
-function unwrap(res: string): any {
+// The envelope result is validated only by its producer (the Go core over
+// the C ABI); T names the documented response shape per operation.
+function unwrap<T>(res: string): T {
   const env = JSON.parse(res) as Envelope;
   if (env.api_version !== API_VERSION) {
     throw new WalrusdError("DB_PROTOCOL_MISMATCH", `api_version ${env.api_version} != ${API_VERSION}`);
@@ -244,7 +254,35 @@ function unwrap(res: string): any {
   if (!env.ok) {
     throw new WalrusdError(env.error!.class, env.error!.message, env.error!.retry_after_ms);
   }
-  return env.result;
+  return env.result as T;
+}
+
+/**
+ * serializeParams converts statement parameters to the JSON wire form.
+ * Byte arrays become { $blob: base64 }; integral numbers above 2^53-1 and
+ * bigints are rejected — JSON cannot carry them exactly, so callers must
+ * pass decimal strings (lossless through SQLite's INTEGER affinity).
+ */
+function serializeParams(params: unknown[] | undefined): unknown[] | undefined {
+  if (!params) return params;
+  return params.map((p) => {
+    if (p instanceof Uint8Array) {
+      return { $blob: Buffer.from(p).toString("base64") };
+    }
+    if (typeof p === "bigint") {
+      throw new WalrusdError(
+        "DB_INVALID_ARGUMENT",
+        "bigint parameters are not JSON-safe; pass a decimal string instead",
+      );
+    }
+    if (typeof p === "number" && Number.isInteger(p) && !Number.isSafeInteger(p)) {
+      throw new WalrusdError(
+        "DB_INVALID_ARGUMENT",
+        `parameter ${p} exceeds Number.MAX_SAFE_INTEGER; pass a decimal string instead`,
+      );
+    }
+    return p;
+  });
 }
 
 /**
@@ -286,8 +324,8 @@ export class WalrusdDatabase {
           compaction_threshold: options.compactionThreshold,
           compaction_retention_ms: options.compactionRetentionMs,
           compaction_timeout_ms: options.compactionTimeoutMs,
-          write_sync_interval_ms: options.writeSyncIntervalMs,
           max_temp_write_buffer: options.maxTempWriteBuffer,
+          max_read_result_bytes: options.maxReadResultBytes,
           redis_address: options.redisAddress,
           redis_password: options.redisPassword,
           redis_db: options.redisDB,
@@ -307,30 +345,33 @@ export class WalrusdDatabase {
   /** Static version/core info (spec §11: included in health/status). */
   static version(): { api_version: number; core_version: string } {
     const native = loadNative();
-    return unwrap(native.version());
+    return unwrap<{ api_version: number; core_version: string }>(native.version());
   }
 
   async write(options: WriteOptions): Promise<WriteResult> {
     const request = JSON.stringify({
       descriptor: options.database,
       idempotency_key: options.idempotencyKey,
-      statements: options.statements,
+      statements: options.statements.map((st) => ({
+        sql: st.sql,
+        params: serializeParams(st.params),
+      })),
     });
     const deadline = Date.now() + this.defaultWriteDeadlineMs;
     const res = await this.native.write(this.handle, request, deadline);
-    return unwrap(res) as WriteResult;
+    return unwrap<WriteResult>(res);
   }
 
   async read(options: ReadOptions): Promise<ReadResult> {
     const request = JSON.stringify({
       descriptor: options.database,
       sql: options.sql,
-      params: options.params,
+      params: serializeParams(options.params),
       consistency: options.consistency,
     });
     const deadline = Date.now() + this.defaultDeadlineMs;
     const res = await this.native.read(this.handle, request, deadline);
-    return unwrap(res) as ReadResult;
+    return unwrap<ReadResult>(res);
   }
   /**
    * readDsn returns a SQLite DSN (file:...?vfs=walrusd_N&mode=ro) that the
@@ -351,7 +392,7 @@ export class WalrusdDatabase {
     const request = JSON.stringify({ descriptor: options.database });
     const deadline = Date.now() + this.defaultDeadlineMs;
     const res = await this.native.readDsn(this.handle, request, deadline);
-    return unwrap(res) as { dsn: string; vfs: string; replica_url?: string };
+    return unwrap<{ dsn: string; vfs: string; replica_url?: string }>(res);
   }
 
   async close(): Promise<void> {

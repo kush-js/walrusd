@@ -6,6 +6,8 @@
 package litestream
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -34,7 +36,6 @@ type Profile struct {
 
 // Config controls VFS behavior (spec §16 litestream section).
 type Config struct {
-	WriteSyncInterval   int64 // ms between background syncs; disable = forced flush
 	VFSPageCacheBytes   int
 	HydrationEnabled    bool // must be false in normal operation (invariant 11)
 	WriteBufferRootPath string
@@ -51,7 +52,6 @@ type Config struct {
 // DefaultConfig returns the starting configuration from spec §16.
 func DefaultConfig() Config {
 	return Config{
-		WriteSyncInterval: 1000,
 		// No page cache by default: the runtime treats compute as stateless
 		// and callers that want an in-process cache opt in explicitly.
 		VFSPageCacheBytes:    0,
@@ -84,17 +84,55 @@ var globalVFSSeq atomic.Uint64
 // so SQLite opens and SQL execution no longer take this lock; only registry
 // mutations do.
 var (
-	vfsRegistryMu    sync.Mutex
+	vfsRegistrySem   = make(chan struct{}, 1)
 	vfsRegistrations atomic.Uint64
 )
+
+// registryLockWait caps waits on the registry semaphore when the caller
+// has no earlier deadline. Tests shorten it.
+var registryLockWait = 60 * time.Second
+
+// ErrRegistryBusy reports that the process-global VFS registry could not be
+// acquired within the caller's deadline: either the caller re-entered the
+// runtime from a session callback (a permanent self-deadlock by design of
+// the registry), or an unrelated operation is holding the registry past
+// every deadline. Retryable when caused by contention.
+var ErrRegistryBusy = errors.New("litestream: vfs registry busy (callback re-entered the runtime, or an open is stuck)")
+
+// lockRegistry acquires the VFS registry semaphore, waiting no longer than
+// the caller's deadline and registryLockWait, whichever comes first.
+func lockRegistry(ctx context.Context) error {
+	select {
+	case vfsRegistrySem <- struct{}{}:
+		return nil
+	default:
+	}
+	timer := time.NewTimer(registryLockWait)
+	defer timer.Stop()
+	select {
+	case vfsRegistrySem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %v", ErrRegistryBusy, ctx.Err())
+	case <-timer.C:
+		return ErrRegistryBusy
+	}
+}
+
+// unlockRegistry releases the VFS registry semaphore.
+func unlockRegistry() {
+	<-vfsRegistrySem
+}
 
 // RegisteredVFSCount reports how many process-global sqlite3vfs instances
 // are currently registered by this package.
 func RegisteredVFSCount() uint64 { return vfsRegistrations.Load() }
 
 func registerVFS(name string, v sqlite3vfs.VFS) error {
-	vfsRegistryMu.Lock()
-	defer vfsRegistryMu.Unlock()
+	if err := lockRegistry(context.Background()); err != nil {
+		return err
+	}
+	defer unlockRegistry()
 	if err := sqlite3vfs.RegisterVFS(name, v); err != nil {
 		return err
 	}
@@ -102,11 +140,8 @@ func registerVFS(name string, v sqlite3vfs.VFS) error {
 	return nil
 }
 
-// NewBridge builds a VFS bridge.
+// NewBridge builds a VFS bridge from a config (start from DefaultConfig).
 func NewBridge(cfg Config) *Bridge {
-	if cfg.WriteSyncInterval == 0 {
-		cfg = DefaultConfig()
-	}
 	b := &Bridge{
 		cfg:     cfg,
 		names:   make(map[string]string),

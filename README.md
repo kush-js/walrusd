@@ -80,7 +80,7 @@ flowchart LR
 
     subgraph OS["Object storage (S3)"]
         direction TB
-        R["replica/\n(LTX files)"]
+        R["replica/\n(LTX files + manifest.json)"]
     end
 
     LF -- "read: no lease,\nremote-committed state" --> R
@@ -112,9 +112,11 @@ sequenceDiagram
     R->>V: open write-mode session
     C->>V: SQL transaction (fn)
     V->>O: flush LTX file (synchronous, before release)
+    R->>O: write replica/manifest.json (the open index)
     R->>L: release (Lua CAS)
     R-->>C: ack + TXID
     Note over C,O: crash anywhere? retry with the same<br/>idempotency key — the result is deduplicated
+    Note over R,O: a background worker compacts the chain<br/>under a separate lease, outside the write
 ```
 
 ## Quick start (Bun)

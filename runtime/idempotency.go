@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS _walrusd_idempotency (
 // prior result, and returns it rather than repeating the operation.
 func lookupIdempotent(ctx context.Context, conn *sql.Conn, key string) (string, error) {
 	if _, err := conn.ExecContext(ctx, idempotencySchema); err != nil {
-		return "", walrusderr.Wrap(walrusderr.ClassConflict, "prepare idempotency table", err)
+		return "", walrusderr.Wrap(classifySQLError(err), "prepare idempotency table", err)
 	}
 	var txid string
 	err := conn.QueryRowContext(ctx,
@@ -29,7 +29,7 @@ func lookupIdempotent(ctx context.Context, conn *sql.Conn, key string) (string, 
 		return "", nil
 	}
 	if err != nil {
-		return "", walrusderr.Wrap(walrusderr.ClassConflict, "read idempotency result", err)
+		return "", walrusderr.Wrap(classifySQLError(err), "read idempotency result", err)
 	}
 	return txid, nil
 }
@@ -39,7 +39,7 @@ func recordIdempotent(ctx context.Context, conn *sql.Conn, key, txid string) err
 	_, err := conn.ExecContext(ctx,
 		`INSERT INTO _walrusd_idempotency (idempotency_key, txid) VALUES (?, ?)`, key, txid)
 	if err != nil {
-		return walrusderr.Wrap(walrusderr.ClassConflict, "record idempotency result", err)
+		return walrusderr.Wrap(classifySQLError(err), "record idempotency result", err)
 	}
 	return nil
 }

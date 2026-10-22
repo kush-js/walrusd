@@ -3,13 +3,17 @@
 // JSON envelopes. No raw SQLite pointers cross into JavaScript (spec §11,
 // §18).
 //
-// write/read/readDsn are ASYNC (napi_async_work returning a Promise): the Go
-// core blocks for lease acquisition, SQLite, and LTX flush — running that on
-// the JS thread would stall the event loop for seconds. init/version/close/
-// load stay synchronous (fast, non-blocking).
+// write/read/readDsn are ASYNC (dedicated worker thread + threadsafe
+// function returning a Promise): the Go core blocks for lease acquisition,
+// SQLite, and LTX flush — running that on the JS thread would stall the
+// event loop, and libuv's small shared thread pool would throttle every
+// concurrent database call and starve fs/dns work. init/version/close/load
+// stay synchronous (process lifetime operations).
 #include <node_api.h>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <dlfcn.h>
 
 // ABI symbols resolved from the shared library at load time.
@@ -19,6 +23,7 @@ typedef const char* (*walrusd_close_t)(uint64_t handle);
 typedef void (*walrusd_free_t)(char* p);
 typedef uint64_t (*walrusd_init_t)(const char* req, int n);
 
+typedef const char* (*walrusd_init_error_t)();
 static walrusd_call_t walrusd_write_sym;
 static walrusd_call_t walrusd_read_sym;
 static walrusd_call_t walrusd_read_dsn_sym;
@@ -26,6 +31,7 @@ static walrusd_version_t walrusd_version_sym;
 static walrusd_close_t walrusd_close_sym;
 static walrusd_free_t walrusd_free_sym;
 static walrusd_init_t walrusd_init_sym;
+static walrusd_init_error_t walrusd_init_error_sym;
 
 static napi_value walrusd_throw(napi_env env, const char* message) {
   napi_value err;
@@ -48,10 +54,15 @@ static napi_value to_js_string_and_free(napi_env env, const char* res) {
 }
 
 // ---- async call machinery (write/read/readDsn) ----
+//
+// Each call runs on its own detached worker thread and delivers its result
+// back to the JS thread through a threadsafe function. The work is
+// long-blocking by nature (20s+ per attempt), so it must never consume the
+// libuv thread pool that Node shares for all async I/O.
 
 struct CallWork {
-  napi_async_work work = nullptr;
-  napi_deferred deferred;
+  napi_threadsafe_function tsfn = nullptr;
+  napi_deferred deferred = nullptr;
   walrusd_call_t sym = nullptr;
   uint64_t handle = 0;
   std::string req;
@@ -60,27 +71,15 @@ struct CallWork {
   std::string error;
 };
 
-static void call_execute(napi_env env, void* data) {
-  (void)env;
+static void call_deliver(napi_env env, napi_value /*js_cb*/, void* /*ctx*/, void* data) {
   CallWork* w = static_cast<CallWork*>(data);
-  const char* res = w->sym(w->handle, w->req.data(), static_cast<int>(w->req.size()), w->deadline_ms);
-  if (res == nullptr) {
-    w->error = "walrusd: null response from core";
+  // env == nullptr: the environment is tearing down with work still
+  // queued. Nothing to resolve; just release the payload.
+  if (env == nullptr) {
+    delete w;
     return;
   }
-  w->result.assign(res);
-  walrusd_free_sym(const_cast<char*>(res));
-}
-
-static void call_complete(napi_env env, napi_status status, void* data) {
-  CallWork* w = static_cast<CallWork*>(data);
-  if (status != napi_ok) {
-    napi_value err;
-    napi_create_string_utf8(env, "walrusd: async work failed", NAPI_AUTO_LENGTH, &err);
-    napi_value rej;
-    napi_create_error(env, nullptr, err, &rej);
-    napi_reject_deferred(env, w->deferred, rej);
-  } else if (!w->error.empty()) {
+  if (!w->error.empty()) {
     napi_value msg;
     napi_create_string_utf8(env, w->error.c_str(), NAPI_AUTO_LENGTH, &msg);
     napi_value rej;
@@ -91,8 +90,25 @@ static void call_complete(napi_env env, napi_status status, void* data) {
     napi_create_string_utf8(env, w->result.c_str(), NAPI_AUTO_LENGTH, &out);
     napi_resolve_deferred(env, w->deferred, out);
   }
-  napi_delete_async_work(env, w->work);
   delete w;
+}
+
+static void call_thread(CallWork* w) {
+  const char* res = w->sym(w->handle, w->req.data(), static_cast<int>(w->req.size()), w->deadline_ms);
+  if (res == nullptr) {
+    w->error = "walrusd: null response from core";
+  } else {
+    w->result.assign(res);
+    walrusd_free_sym(const_cast<char*>(res));
+  }
+  if (napi_call_threadsafe_function(w->tsfn, w, napi_tsfn_nonblocking) != napi_ok) {
+    // The environment is gone or the queue rejected the delivery: the JS
+    // side will never see this payload, so free it here.
+    delete w;
+  }
+  // Balance the initial thread count: queued work is still delivered, and
+  // the function is destroyed once drained.
+  napi_release_threadsafe_function(w->tsfn, napi_tsfn_release);
 }
 
 static napi_value walrusd_call_async(napi_env env, napi_callback_info info, walrusd_call_t sym, const char* resource) {
@@ -127,15 +143,16 @@ static napi_value walrusd_call_async(napi_env env, napi_callback_info info, walr
   }
   napi_value resource_name;
   napi_create_string_utf8(env, resource, NAPI_AUTO_LENGTH, &resource_name);
-  if (napi_create_async_work(env, nullptr, resource_name, call_execute, call_complete, w, &w->work) != napi_ok) {
+  if (napi_create_threadsafe_function(env, nullptr, nullptr, resource_name, 0, 1,
+                                      nullptr, nullptr, nullptr, call_deliver, &w->tsfn) != napi_ok) {
     delete w;
-    return walrusd_throw(env, "walrusd: cannot create async work");
+    return walrusd_throw(env, "walrusd: cannot create threadsafe function");
   }
-  if (napi_queue_async_work(env, w->work) != napi_ok) {
-    napi_delete_async_work(env, w->work);
-    delete w;
-    return walrusd_throw(env, "walrusd: cannot queue async work");
-  }
+  // The threadsafe function stays referenced while the call is pending: a
+  // pending promise must keep the event loop alive exactly like any other
+  // in-flight I/O. Delivery releases the thread count, which destroys the
+  // function once drained.
+  std::thread(call_thread, w).detach();
   return promise;
 }
 
@@ -157,7 +174,16 @@ static napi_value walrusd_init(napi_env env, napi_callback_info info) {
   napi_get_value_string_utf8(env, args[0], req.data(), len + 1, &len);
   uint64_t h = walrusd_init_sym(req.data(), static_cast<int>(req.size()));
   if (h == 0) {
-    return walrusd_throw(env, "walrusd: init failed");
+    std::string message = "walrusd: init failed";
+    if (walrusd_init_error_sym != nullptr) {
+      const char* detail = walrusd_init_error_sym();
+      if (detail != nullptr && *detail != '\0') {
+        message += ": ";
+        message += detail;
+      }
+      walrusd_free_sym(const_cast<char*>(detail));
+    }
+    return walrusd_throw(env, message.c_str());
   }
   napi_value out;
   napi_create_int64(env, static_cast<int64_t>(h), &out);
@@ -191,6 +217,8 @@ static napi_value walrusd_close(napi_env env, napi_callback_info info) {
 }
 
 static napi_value walrusd_load(napi_env env, napi_callback_info info) {
+  static std::mutex load_mu;
+  std::lock_guard<std::mutex> guard(load_mu);
   size_t argc = 1;
   napi_value args[1];
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -213,6 +241,8 @@ static napi_value walrusd_load(napi_env env, napi_callback_info info) {
   walrusd_close_sym = reinterpret_cast<walrusd_close_t>(dlsym(lib, "walrusd_runtime_close"));
   walrusd_free_sym = reinterpret_cast<walrusd_free_t>(dlsym(lib, "walrusd_free"));
   walrusd_init_sym = reinterpret_cast<walrusd_init_t>(dlsym(lib, "walrusd_runtime_init"));
+  // Optional: present in libs built with the init error surface.
+  walrusd_init_error_sym = reinterpret_cast<walrusd_init_error_t>(dlsym(lib, "walrusd_runtime_init_error"));
   if (!walrusd_write_sym || !walrusd_read_sym || !walrusd_read_dsn_sym || !walrusd_version_sym || !walrusd_close_sym || !walrusd_free_sym || !walrusd_init_sym) {
     return walrusd_throw(env, "walrusd: shared library missing required symbols");
   }

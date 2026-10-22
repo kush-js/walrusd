@@ -103,19 +103,64 @@ func NewManager(store Store, owner string, cfg Config, keyFn keyFunc) *Manager {
 	}
 }
 
-// Held is a successfully acquired lease. Version is the fencing token that
-// must be used for the conditional release.
+// Held is a successfully acquired lease. The internal version is the
+// fencing token used for every conditional replace: renewal rotates it, so
+// callers must go through Manager.Release/Abandon rather than reading it.
 type Held struct {
-	Record  Record
-	Version string
-	key     string
+	key string
+
+	mu      sync.Mutex
+	record  Record
+	version string
+	lost    bool
+
+	stop      chan struct{} // closed to end the renewal loop
+	done      chan struct{} // closed when the renewal loop has exited
+	maxExpiry time.Time     // hard cap on renewal; beyond this the lease expires
 }
 
 // LeaseID returns the acquired lease ID.
-func (h *Held) LeaseID() string { return h.Record.LeaseID }
+func (h *Held) LeaseID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.record.LeaseID
+}
 
 // Epoch returns the ownership generation.
-func (h *Held) Epoch() uint64 { return h.Record.Epoch }
+func (h *Held) Epoch() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.record.Epoch
+}
+
+// ExpiresAt returns the current logical expiry, extended by renewal.
+func (h *Held) ExpiresAt() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.record.ExpiresAt
+}
+
+// Lost reports whether renewal observed a lost lease (conflict or store
+// failure). A lost lease must never flush or release.
+func (h *Held) Lost() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lost
+}
+
+// snapshot returns the current record and fencing token.
+func (h *Held) snapshot() (Record, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.record, h.version
+}
+
+// markLost flags the lease as no longer provably ours and ends renewal.
+func (h *Held) markLost() {
+	h.mu.Lock()
+	h.lost = true
+	h.mu.Unlock()
+}
 
 // Acquire acquires the lease for db before any SQLite write begins
 // (spec §7.2). It is single-flight per database ID inside this process and
@@ -154,8 +199,18 @@ func (m *Manager) acquireSingleFlight(ctx context.Context, db identity.DatabaseI
 	m.flightMu.Unlock()
 
 	fl.Lock()
-	defer fl.Unlock()
-	return m.acquireLocked(ctx, db, key)
+	held, err := m.acquireLocked(ctx, db, key)
+	fl.Unlock()
+	// Drop the per-key mutex once uncontended. Acquisition correctness
+	// lives in the store CAS, so a later caller creating a fresh mutex can
+	// at worst contend twice inside one process — the map stays bounded by
+	// in-flight acquisitions, not by databases ever seen.
+	m.flightMu.Lock()
+	if m.flights[key] == fl {
+		delete(m.flights, key)
+	}
+	m.flightMu.Unlock()
+	return held, err
 }
 
 func (m *Manager) acquireLocked(ctx context.Context, db identity.DatabaseID, key string) (*Held, error) {
@@ -243,7 +298,7 @@ func (m *Manager) create(ctx context.Context, key string, rec Record) (*Held, er
 	if err != nil {
 		return nil, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "create lease", err)
 	}
-	return &Held{Record: rec, Version: version, key: key}, nil
+	return m.newHeld(key, rec, version), nil
 }
 
 func (m *Manager) replace(ctx context.Context, key, expectedVersion string, rec Record) (*Held, error) {
@@ -259,7 +314,76 @@ func (m *Manager) replace(ctx context.Context, key, expectedVersion string, rec 
 	if err != nil {
 		return nil, walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "replace lease", err)
 	}
-	return &Held{Record: rec, Version: version, key: key}, nil
+	return m.newHeld(key, rec, version), nil
+}
+
+// newHeld wraps an acquired record with its renewal loop.
+func (m *Manager) newHeld(key string, rec Record, version string) *Held {
+	held := &Held{key: key, record: rec, version: version, maxExpiry: rec.ExpiresAt.Add(2 * m.cfg.Duration)}
+	held.stop = make(chan struct{})
+	held.done = make(chan struct{})
+	go m.renewLoop(held)
+	return held
+}
+
+// renewLoop heartbeats the lease while it is held. Renewal is what keeps a
+// slow-but-correct transaction or flush from outliving its lease and
+// letting a successor fork the LTX chain (spec §7.4): the fence stays valid
+// as long as this process is alive and the store is reachable. Renewal
+// stops at maxExpiry so a holder wedged in an uncancellable call still
+// loses the lease eventually — takeover-after-expiry is the crash safety
+// net and must survive a stuck-but-alive process. The loop also ends at
+// Release/Abandon, or when renewal fails — after which the lease expires on
+// its own and Held.Lost reports that it is no longer ours.
+func (m *Manager) renewLoop(held *Held) {
+	defer close(held.done)
+	interval := m.cfg.Duration / 3
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-held.stop:
+			return
+		case <-ticker.C:
+		}
+		rec, version := held.snapshot()
+		next := m.cfg.now().Add(m.cfg.Duration)
+		if next.After(held.maxExpiry) {
+			return // hold window exhausted; let the lease expire
+		}
+		rec.ExpiresAt = next
+		body, err := json.Marshal(rec)
+		if err != nil {
+			held.markLost()
+			return
+		}
+		newVersion, err := m.store.ReplaceIfToken(context.Background(), held.key, version, body)
+		if err != nil {
+			held.markLost()
+			return
+		}
+		held.mu.Lock()
+		held.record.ExpiresAt = rec.ExpiresAt
+		held.version = newVersion
+		held.mu.Unlock()
+	}
+}
+
+// stopRenewal ends the renewal loop and waits for any in-flight renewal so
+// the fencing token is stable afterwards.
+func (m *Manager) stopRenewal(held *Held) {
+	if held.stop == nil {
+		return
+	}
+	select {
+	case <-held.stop:
+	default:
+		close(held.stop)
+	}
+	<-held.done
 }
 
 // Release conditionally replaces the lease with state=released using the
@@ -271,14 +395,15 @@ func (m *Manager) Release(ctx context.Context, held *Held) error {
 	if held == nil {
 		return nil
 	}
-	rec := held.Record
+	m.stopRenewal(held)
+	rec, version := held.snapshot()
 	rec.State = StateReleased
 	rec.ExpiresAt = m.cfg.now() // released leases are immediately takeable
 	body, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	_, err = m.store.ReplaceIfToken(ctx, held.key, held.Version, body)
+	_, err = m.store.ReplaceIfToken(ctx, held.key, version, body)
 	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
 		return walrusderr.New(walrusderr.ClassLeaseConflict, "stale lease release (successor owns lease)")
 	}
@@ -286,6 +411,17 @@ func (m *Manager) Release(ctx context.Context, held *Held) error {
 		return walrusderr.Wrap(walrusderr.ClassRemoteUnavailable, "release lease", err)
 	}
 	return nil
+}
+
+// Abandon ends renewal without touching the store: the lease is left to
+// expire on its own. Use on paths that must not release (a flush that was
+// not confirmed may have forked the chain; releasing would hand the lease
+// to a successor while our upload is still ambiguous).
+func (m *Manager) Abandon(held *Held) {
+	if held == nil {
+		return
+	}
+	m.stopRenewal(held)
 }
 
 // jitter returns a random duration in [min, max].
